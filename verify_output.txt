@@ -1,0 +1,68 @@
+﻿Testing for sonthaliadarsh@gmail.com...
+Workspaces: [{"id": 1, "name": "My Workspace", "what_you_sell": "saas", "target_industry": "marketing ", "target_role": "ceo", "target_region": "usa", "offer_type": "demo", "safety_preference": "MEDIUM", "has_leads": true, "created_at": "2025-12-28T16:22:36.690195"}]
+
+Campaigns (Count: 5):
+[
+  {
+    "id": 6,
+    "name": "test",
+    "status": "RUNNING",
+    "pause_reason": null,
+    "subject": "test",
+    "body": "test again 2.0",
+    "safety_level": "MEDIUM",
+    "launched_at": "2025-12-30T16:15:56.412164",
+    "created_at": "2025-12-30T16:15:29.419419"
+  },
+  {
+    "id": 5,
+    "name": "test againagain",
+    "status": "RUNNING",
+    "pause_reason": null,
+    "subject": "test",
+    "body": "test",
+    "safety_level": "MEDIUM",
+    "launched_at": "2025-12-30T15:58:21.785941",
+    "created_at": "2025-12-30T15:58:06.248633"
+  },
+  {
+    "id": 4,
+    "name": "test again",
+    "status": "RUNNING",
+    "pause_reason": null,
+    "subject": "test again don't report spam",
+    "body": "123",
+    "safety_level": "MEDIUM",
+    "launched_at": "2025-12-30T15:25:00.169895",
+    "created_at": "2025-12-30T15:24:42.462269"
+  },
+  {
+    "id": 3,
+    "name": "test leads add",
+    "status": "RUNNING",
+    "pause_reason": null,
+    "subject": "test",
+    "body": "from darsh - do not report spam pls",
+    "safety_level": "MEDIUM",
+    "launched_at": "2025-12-30T15:16:51.956703",
+    "created_at": "2025-12-30T15:16:33.994563"
+  },
+  {
+    "id": 2,
+    "name": "test",
+    "status": "COMPLETED",
+    "pause_reason": null,
+    "subject": "sure",
+    "body": "testing - need to generate copy automatically, like crazy response boosting copy.",
+    "safety_level": "MEDIUM",
+    "launched_at": "2025-12-30T15:12:48.996647",
+    "created_at": "2025-12-30T15:12:00.716307"
+  }
+]
+
+Dashboards:
+ID 6 (test): {"campaign_id": 6, "name": "test", "status": "RUNNING", "pause_reason": null, "emails_sent_today": 1, "total_emails_sent": 1, "replies_count": 0, "meetings_booked": 0, "daily_limit": 10, "remaining_today": 4}
+ID 5 (test againagain): {"campaign_id": 5, "name": "test againagain", "status": "RUNNING", "pause_reason": null, "emails_sent_today": 1, "total_emails_sent": 1, "replies_count": 0, "meetings_booked": 0, "daily_limit": 10, "remaining_today": 4}
+ID 4 (test again): {"campaign_id": 4, "name": "test again", "status": "RUNNING", "pause_reason": null, "emails_sent_today": 2, "total_emails_sent": 2, "replies_count": 0, "meetings_booked": 0, "daily_limit": 10, "remaining_today": 4}
+ID 3 (test leads add): {"campaign_id": 3, "name": "test leads add", "status": "RUNNING", "pause_reason": null, "emails_sent_today": 1, "total_emails_sent": 1, "replies_count": 0, "meetings_booked": 0, "daily_limit": 10, "remaining_today": 4}
+ID 2 (test): {"campaign_id": 2, "name": "test", "status": "COMPLETED", "pause_reason": null, "emails_sent_today": 1, "total_emails_sent": 1, "replies_count": 0, "meetings_booked": 0, "daily_limit": 10, "remaining_today": 4}
