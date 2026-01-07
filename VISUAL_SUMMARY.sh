@@ -5,8 +5,8 @@ cat << 'EOF'
 
 ╔════════════════════════════════════════════════════════════════════════════╗
 ║                                                                            ║
-║              ✅ MULTIPLE MAILBOX & RE-LINK FEATURE                         ║
-║                      IMPLEMENTATION COMPLETE                              ║
+║              ✅ MULTIPLE MAILBOX & RE-LINK FEATURE                         
+║                      IMPLEMENTATION COMPLETE                               ║
 ║                                                                            ║
 ╚════════════════════════════════════════════════════════════════════════════╝
 
@@ -33,7 +33,6 @@ cat << 'EOF'
    └─ [Inactive] badge (red) = needs re-authentication
 
 ═════════════════════════════════════════════════════════════════════════════
-
 📊 FEATURE COMPARISON
 ═════════════════════════════════════════════════════════════════════════════
 
