@@ -31,14 +31,40 @@ NEGATIVE_PATTERNS = [
 ]
 
 BOOKING_INTENT_PATTERNS = [
-    r'\bschedule\s+a\s+(call|meeting|demo)\b',
-    r'\bbook\s+a\s+(call|meeting|demo|time)\b',
-    r'\blet\'?s\s+(chat|talk|meet|connect)\b',
-    r'\bset\s+up\s+a\s+(call|meeting|time)\b',
+    # Direct scheduling requests
+    r'\bschedule\s+a\s+(call|meeting|demo|sync)\b',
+    r'\bbook\s+a\s+(call|meeting|demo|time|slot)\b',
+    r'\blet\'?s\s+(chat|talk|meet|connect|discuss)\b',
+    r'\bset\s+up\s+a\s+(call|meeting|time|demo)\b',
     r'\bwhat\s+times?\s+(work|are\s+good|do\s+you\s+have)\b',
     r'\bsend\s+me\s+(your\s+)?calendar\b',
     r'\bcalendly\b',
-    r'\bfree\s+(this|next)\s+week\b',
+    r'\bfree\s+(this|next)\s+(week|day)\b',
+    r'\bavailable\s+(this|next)\s+(week|day|time)\b',
+    
+    # Interest indicators
+    r'\bwould\s+(love|like)\s+to\s+(learn|hear|discuss|know)\b',
+    r'\bsounds?\s+(great|interesting|good)\b',
+    r'\binterested\s+in\b',
+    r'\bwant\s+to\s+(learn|know|discuss|explore)\b',
+    r'\btell\s+me\s+more\b',
+    r'\bmore\s+info(?:rmation)?\b',
+    r'\bcan\s+we\s+(talk|discuss|connect)\b',
+    r'\bwhen\s+can\s+(we|you)\s+(meet|talk|discuss)\b',
+    r'\blet\'?s\s+(discuss|explore|talk)\b',
+    r'\bthis\s+(sounds|looks)\s+(great|good|interesting)\b',
+    
+    # Positive engagement
+    r'\bgreat\s+(idea|suggestion|thought)\b',
+    r'\blooks\s+interesting\b',
+    r'\bwould\s+work\s+for\s+(me|us)\b',
+    r'\bhow\s+do\s+we\s+(get\s+started|move\s+forward|proceed)\b',
+    r'\bwhat\'?s\s+the\s+next\s+step\b',
+    r'\bsounds\s+perfect\b',
+    r'\blet\'?s\s+move\s+forward\b',
+    r'\bi\'?m\s+(interested|open|keen)\b',
+    r'\bcatch\s+up\s+(soon|this\s+week)\b',
+    r'\bfollow\s+up\b',
 ]
 
 # Fix E1: Bounce detection with multiple signal categories

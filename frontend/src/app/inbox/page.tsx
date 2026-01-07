@@ -9,6 +9,7 @@ interface Reply {
     id: number;
     lead_email: string;
     lead_name?: string;
+    campaign_name?: string;
     subject?: string;
     body?: string;
     classification?: string;
@@ -263,6 +264,11 @@ export default function InboxPage() {
                                 <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
                                     {reply.subject || '(no subject)'}
                                 </div>
+                                {reply.campaign_name && (
+                                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                                        Campaign: {reply.campaign_name}
+                                    </div>
+                                )}
                                 <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
                                     {reply.received_at && new Date(reply.received_at).toLocaleString()}
                                 </div>

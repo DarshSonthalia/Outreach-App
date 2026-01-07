@@ -237,10 +237,12 @@ class ReplyResponse(BaseModel):
     id: int
     lead_email: str
     lead_name: Optional[str]
+    campaign_name: Optional[str]
     subject: Optional[str]
     body: Optional[str]
     classification: Optional[ReplyClassification]
     received_at: Optional[datetime]
+    direction: Optional[str]  # "INBOUND" or "OUTBOUND" for frontend styling
 
     class Config:
         from_attributes = True

@@ -225,6 +225,44 @@ async def launch_campaign(
             detail="Mailbox is not active"
         )
     
+    # CRITICAL: Verify domain safety before launching
+    from app.models import Domain
+    
+    # Get domain name from mailbox email
+    domain_name = campaign.mailbox.email.split("@")[1] if "@" in campaign.mailbox.email else None
+    
+    if not domain_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid mailbox email format: {campaign.mailbox.email}"
+        )
+    
+    # Query domain by name and workspace (not by mailbox_id, to support multiple mailboxes with same domain)
+    domain = db.query(Domain).filter(
+        Domain.workspace_id == campaign.mailbox.workspace_id,
+        Domain.domain == domain_name
+    ).first()
+    
+    if not domain:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Domain not configured for {domain_name}. Please connect the mailbox again."
+        )
+    
+    # Check SPF record
+    if not domain.spf_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"SPF record invalid for domain {domain.domain}. Please fix your DNS settings before launching. Current SPF: {domain.spf_record or 'Not found'}"
+        )
+    
+    # Check DMARC record
+    if not domain.dmarc_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"DMARC record invalid for domain {domain.domain}. Please fix your DNS settings before launching. Current DMARC: {domain.dmarc_record or 'Not found'}"
+        )
+    
     # Schedule initial sends
     now = datetime.utcnow()
     campaign_leads = db.query(CampaignLead).filter(
@@ -421,6 +459,82 @@ async def get_campaign_dashboard(
     )
     print(f"DEBUG: Dashboard for {campaign_id}: sent_today={emails_sent_today}, status={campaign.status}")
     return result
+
+
+@router.post("/{campaign_id}/resume", response_model=CampaignResponse)
+async def resume_campaign_if_auth_fixed(
+    campaign_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Fix B2: Resume a campaign that was paused due to mailbox re-authentication.
+    
+    Verifies that:
+    1. Campaign exists and belongs to user
+    2. Campaign is paused due to auth issue
+    3. Mailbox is now active (user re-authenticated)
+    
+    If all checks pass, resumes the campaign with rescheduled sends.
+    """
+    campaign = db.query(Campaign).join(Workspace).filter(
+        Campaign.id == campaign_id,
+        Workspace.user_id == current_user.id
+    ).first()
+    
+    if not campaign:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Campaign not found"
+        )
+    
+    if campaign.status != CampaignStatus.PAUSED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Campaign is {campaign.status.value}, not paused"
+        )
+    
+    # Check if pause reason indicates auth issue
+    if not campaign.pause_reason or "re-authentication" not in campaign.pause_reason.lower():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Campaign paused for different reason: {campaign.pause_reason}. Use /pause endpoint to manually resume."
+        )
+    
+    # Verify mailbox is now active
+    from app.models import Mailbox
+    mailbox = db.query(Mailbox).filter(Mailbox.id == campaign.mailbox_id).first()
+    
+    if not mailbox:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mailbox not found"
+        )
+    
+    if not mailbox.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mailbox is still inactive. Please re-authenticate first."
+        )
+    
+    # Resume campaign
+    campaign.status = CampaignStatus.RUNNING
+    campaign.pause_reason = None
+    
+    # Reschedule pending leads
+    now = datetime.utcnow()
+    pending_leads = db.query(CampaignLead).filter(
+        CampaignLead.campaign_id == campaign_id,
+        CampaignLead.status == CampaignLeadStatus.PENDING
+    ).all()
+    
+    for i, cl in enumerate(pending_leads):
+        cl.next_action_at = now + timedelta(minutes=i * 2)
+    
+    db.commit()
+    db.refresh(campaign)
+    
+    return campaign
 
 
 @router.delete("/{campaign_id}", response_model=CampaignResponse)

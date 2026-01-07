@@ -13,7 +13,7 @@ from app.celery_app import celery_app
 from app.database import SessionLocal
 from app.enums import MailboxStatus
 from app.models import (
-    Mailbox, Campaign, CampaignLead, Message, Event, Lead,
+    Mailbox, Campaign, CampaignLead, Message, Event, Lead, Workspace,
     CampaignStatus, CampaignLeadStatus, MessageDirection, 
     ReplyClassification, SuppressionReason
 )
@@ -45,11 +45,11 @@ def poll_all_mailboxes():
         for mailbox in mailboxes:
             try:
                 poll_single_mailbox(db, mailbox)
+                db.commit()  # Commit after each mailbox to ensure data is saved
             except Exception as e:
                 logger.error(f"Error polling mailbox {mailbox.email}: {e}")
+                db.rollback()  # Rollback on error
                 continue
-        
-        db.commit()
         
     except Exception as e:
         logger.error(f"Error in poll_all_mailboxes: {e}")
@@ -95,6 +95,7 @@ def poll_single_mailbox(db, mailbox: Mailbox):
                 process_incoming_message(db, mailbox, msg_data)
             except Exception as e:
                 logger.error(f"Error processing message {msg_data.get('id')}: {e}")
+                db.rollback()  # Rollback transaction on error to recover session state
                 continue
                 
     except Exception as e:
@@ -120,10 +121,13 @@ def process_incoming_message(db, mailbox: Mailbox, msg_data: dict):
     sender_email = email_match.group(0).lower() if email_match else from_email.lower()
     
     # Check if this is a reply to one of our threads
-    existing_outbound = db.query(Message).join(CampaignLead).join(Campaign).filter(
+    # IMPORTANT: Search across ALL campaigns in the mailbox's workspace
+    # (not just campaigns tied to this specific mailbox)
+    # This ensures replies are detected regardless of which mailbox sent the original email
+    existing_outbound = db.query(Message).join(CampaignLead).join(Campaign).join(Workspace).filter(
         Message.gmail_thread_id == gmail_thread_id,
         Message.direction == MessageDirection.OUTBOUND,
-        Campaign.mailbox_id == mailbox.id
+        Workspace.id == mailbox.workspace_id
     ).first()
     
     if not existing_outbound:
@@ -134,12 +138,14 @@ def process_incoming_message(db, mailbox: Mailbox, msg_data: dict):
     lead = campaign_lead.lead
     campaign = campaign_lead.campaign
     
-    # Check if we already recorded this message
+    # Check if we already recorded THIS EXACT message (by Gmail message ID)
+    # This prevents duplicate processing of the same email
     existing_reply = db.query(Message).filter(
         Message.gmail_message_id == gmail_message_id
     ).first()
     
     if existing_reply:
+        logger.info(f"Message {gmail_message_id} already processed, skipping")
         return
     
     logger.info(f"New reply detected from {sender_email} to campaign {campaign.id}")
@@ -170,11 +176,19 @@ def process_incoming_message(db, mailbox: Mailbox, msg_data: dict):
         # Classify the reply
         classification = ClassificationService.classify_reply(subject, body)
     
-    # Record the reply (step_number = -1 for inbound)
+    # Calculate next step_number for inbound messages
+    # Inbound messages use negative step numbers (-1, -2, -3, etc.) for ordering
+    max_inbound_step = db.query(Message).filter(
+        Message.campaign_lead_id == campaign_lead.id,
+        Message.direction == MessageDirection.INBOUND
+    ).count()
+    next_step_number = -(max_inbound_step + 1)  # -1 for first reply, -2 for second, etc.
+    
+    # Record the reply with incrementing step_number to allow multiple replies
     message = Message(
         campaign_lead_id=campaign_lead.id,
         direction=MessageDirection.INBOUND,
-        step_number=-1,  # Inbound messages use -1
+        step_number=next_step_number,  # Allows multiple replies per campaign_lead
         gmail_message_id=gmail_message_id,
         gmail_thread_id=gmail_thread_id,
         subject=subject,
@@ -217,5 +231,8 @@ def process_incoming_message(db, mailbox: Mailbox, msg_data: dict):
         explanation=f"Reply received from {lead.email}. Classification: {classification.value if classification else 'unknown'}. All future sends stopped."
     )
     db.add(event)
+    
+    # Commit the message and updates
+    db.flush()  # Ensure message is saved before continuing
     
     logger.info(f"Reply processed for {lead.email}, classification: {classification}")

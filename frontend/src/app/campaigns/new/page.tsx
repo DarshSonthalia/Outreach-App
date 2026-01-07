@@ -12,6 +12,7 @@ export default function NewCampaignPage() {
     const [step, setStep] = useState(1);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
     // Data
     const [mailboxList, setMailboxList] = useState<any[]>([]);
@@ -92,6 +93,7 @@ export default function NewCampaignPage() {
     const handleCreateCampaign = async () => {
         if (!token || !workspaceId || !selectedMailbox) return;
         setSaving(true);
+        setError(null);
 
         try {
             const campaign = await campaigns.create(token, workspaceId, {
@@ -101,8 +103,10 @@ export default function NewCampaignPage() {
             });
             setCampaignId(campaign.id);
             setStep(3);
-        } catch (err) {
+        } catch (err: any) {
             console.error('Error creating campaign:', err);
+            const errorMsg = err?.detail || err?.message || 'Failed to create campaign';
+            setError(errorMsg);
         }
         setSaving(false);
     };
@@ -110,6 +114,7 @@ export default function NewCampaignPage() {
     const handleSetEmails = async () => {
         if (!token || !campaignId) return;
         setSaving(true);
+        setError(null);
 
         try {
             await campaigns.setEmails(token, campaignId, {
@@ -122,8 +127,10 @@ export default function NewCampaignPage() {
             const previewData = await campaigns.preview(token, campaignId);
             setPreview(previewData);
             setStep(4);
-        } catch (err) {
+        } catch (err: any) {
             console.error('Error:', err);
+            const errorMsg = err?.detail || err?.message || 'Failed to save email content';
+            setError(errorMsg);
         }
         setSaving(false);
     };
@@ -131,12 +138,17 @@ export default function NewCampaignPage() {
     const handleLaunch = async () => {
         if (!token || !campaignId) return;
         setSaving(true);
+        setError(null);
 
         try {
-            await campaigns.launch(token, campaignId);
-            router.push('/dashboard');
-        } catch (err) {
+            const result = await campaigns.launch(token, campaignId);
+            if (result) {
+                router.push('/dashboard');
+            }
+        } catch (err: any) {
             console.error('Error launching:', err);
+            const errorMsg = err?.detail || err?.message || 'Failed to launch campaign. Please check that your mailbox is active and domain is properly configured.';
+            setError(errorMsg);
         }
         setSaving(false);
     };
@@ -310,6 +322,12 @@ export default function NewCampaignPage() {
                     <div className="card">
                         <h2 style={{ fontSize: '18px', marginBottom: '24px' }}>Campaign Setup</h2>
 
+                        {error && (
+                            <div className="alert alert-danger" style={{ marginBottom: '24px' }}>
+                                <strong>Error:</strong> {error}
+                            </div>
+                        )}
+
                         <div style={{ marginBottom: '20px' }}>
                             <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)' }}>
                                 Campaign Name
@@ -360,6 +378,12 @@ export default function NewCampaignPage() {
                                 + Add Leads
                             </button>
                         </div>
+
+                        {error && (
+                            <div className="alert alert-danger" style={{ marginBottom: '24px' }}>
+                                <strong>Error:</strong> {error}
+                            </div>
+                        )}
 
                         <p style={{ color: 'var(--text-secondary)', marginBottom: '20px' }}>
                             {selectedLeads.length} of {leadList.length} selected
@@ -440,6 +464,12 @@ export default function NewCampaignPage() {
                     <div className="card">
                         <h2 style={{ fontSize: '18px', marginBottom: '24px' }}>Email Content</h2>
 
+                        {error && (
+                            <div className="alert alert-danger" style={{ marginBottom: '24px' }}>
+                                <strong>Error:</strong> {error}
+                            </div>
+                        )}
+
                         <div style={{ marginBottom: '20px' }}>
                             <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)' }}>
                                 Subject Line
@@ -517,6 +547,12 @@ export default function NewCampaignPage() {
                 {step === 4 && preview && (
                     <div className="card">
                         <h2 style={{ fontSize: '18px', marginBottom: '24px' }}>Ready to Launch</h2>
+
+                        {error && (
+                            <div className="alert alert-danger" style={{ marginBottom: '24px' }}>
+                                <strong>Error:</strong> {error}
+                            </div>
+                        )}
 
                         <div style={{
                             display: 'grid',

@@ -12,8 +12,50 @@ from app.schemas import MailboxResponse, OAuthUrlResponse
 from app.utils.dependencies import get_current_user
 from app.services.gmail_service import GmailService
 from app.services.domain_service import DomainService
+from app.enums import CampaignStatus
 
 router = APIRouter()
+
+
+def _resume_paused_campaigns_for_mailbox(db: Session, mailbox: Mailbox):
+    """
+    Fix B2: Resume campaigns that were paused due to mailbox auth issues.
+    
+    When a mailbox is re-authenticated, find all campaigns that were paused
+    due to "Mailbox requires re-authentication" and resume them.
+    """
+    from app.models import Campaign
+    
+    # Find campaigns paused due to auth issues
+    paused_campaigns = db.query(Campaign).filter(
+        Campaign.mailbox_id == mailbox.id,
+        Campaign.status == CampaignStatus.PAUSED,
+        Campaign.pause_reason.contains("Mailbox requires re-authentication")
+    ).all()
+    
+    for campaign in paused_campaigns:
+        campaign.status = CampaignStatus.RUNNING
+        campaign.pause_reason = None
+        
+        # Re-schedule pending leads starting from now
+        from datetime import datetime, timedelta
+        from app.models import CampaignLead, CampaignLeadStatus
+        
+        now = datetime.utcnow()
+        pending_leads = db.query(CampaignLead).filter(
+            CampaignLead.campaign_id == campaign.id,
+            CampaignLead.status == CampaignLeadStatus.PENDING
+        ).all()
+        
+        for i, cl in enumerate(pending_leads):
+            cl.next_action_at = now + timedelta(minutes=i * 2)
+    
+    if paused_campaigns:
+        db.commit()
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Resumed {len(paused_campaigns)} campaigns for mailbox {mailbox.id}")
+
 
 
 @router.get("/oauth/url", response_model=OAuthUrlResponse)
@@ -88,8 +130,12 @@ async def oauth_callback(
             existing.refresh_token_encrypted = refresh_encrypted
             existing.token_expiry = expiry
             existing.is_active = True
+            existing.status = "ACTIVE"  # Mark as re-authenticated
             db.commit()
             mailbox = existing
+            
+            # Fix B2: Resume campaigns that were paused due to auth issues
+            _resume_paused_campaigns_for_mailbox(db, mailbox)
         else:
             # Create new mailbox
             mailbox = Mailbox(
@@ -113,6 +159,8 @@ async def oauth_callback(
             ).first()
             
             if not existing_domain:
+                # New domain - create it
+                # Note: mailbox_id is set to the first mailbox that connected with this domain
                 domain = Domain(
                     workspace_id=workspace_id,
                     mailbox_id=mailbox.id,
@@ -130,6 +178,7 @@ async def oauth_callback(
                 domain.dmarc_record = dmarc_record
                 
                 db.commit()
+            # If domain already exists, we don't modify it - multiple mailboxes can share the same domain
         
         # Redirect to frontend success page
         from app.config import settings

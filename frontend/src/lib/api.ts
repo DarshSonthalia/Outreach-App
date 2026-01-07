@@ -37,6 +37,11 @@ async function apiRequest<T>(endpoint: string, options: ApiOptions = {}): Promis
         throw new Error(errorMsg);
     }
 
+    // Handle 204 No Content responses
+    if (response.status === 204) {
+        return undefined as T;
+    }
+
     return response.json();
 }
 
@@ -90,6 +95,12 @@ export const mailboxes = {
 
     list: (token: string, workspaceId: number) =>
         apiRequest<any[]>(`/api/mailboxes/?workspace_id=${workspaceId}`, { token }),
+
+    disconnect: (token: string, mailboxId: number) =>
+        apiRequest<void>(`/api/mailboxes/${mailboxId}`, {
+            method: 'DELETE',
+            token,
+        }),
 };
 
 // Domains

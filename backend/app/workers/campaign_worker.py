@@ -177,8 +177,22 @@ def process_single_send(db: Session, campaign_lead: CampaignLead):
             mailbox.refresh_token_encrypted,
             mailbox.token_expiry
         )
+    except ValueError as e:
+        # Token refresh failed or decryption failed
+        logger.error(f"Failed to get credentials for mailbox {mailbox.id}: {e}")
+        
+        # Check if this is a token refresh failure
+        if "Token refresh failed" in str(e) or "Failed to decrypt" in str(e):
+            # Mark mailbox as needing reauth and pause campaigns
+            GmailService._mark_reauth_required(db, mailbox, str(e))
+            return
+        
+        # Otherwise, just delay the send
+        campaign_lead.status = CampaignLeadStatus.PENDING
+        campaign_lead.next_action_at = datetime.utcnow() + timedelta(minutes=30)
+        return
     except Exception as e:
-        logger.error(f"Failed to get credentials: {e}")
+        logger.error(f"Unexpected error getting credentials: {e}")
         campaign_lead.status = CampaignLeadStatus.PENDING
         campaign_lead.next_action_at = datetime.utcnow() + timedelta(minutes=30)
         return

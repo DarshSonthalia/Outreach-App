@@ -35,6 +35,8 @@ export default function DashboardPage() {
     const [connectedMailboxes, setConnectedMailboxes] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [userName, setUserName] = useState('');
+    const [relinkingMailboxId, setRelinkingMailboxId] = useState<number | null>(null);
+    const [disconnectingMailboxId, setDisconnectingMailboxId] = useState<number | null>(null);
 
     useEffect(() => {
         const init = async () => {
@@ -116,6 +118,72 @@ export default function DashboardPage() {
     const handleLogout = () => {
         localStorage.removeItem('token');
         router.push('/');
+    };
+
+    const handleRelinkMailbox = async (mailboxId: number) => {
+        if (!token || !workspaceId) {
+            alert('Session expired. Please reload the page.');
+            return;
+        }
+        
+        try {
+            setRelinkingMailboxId(mailboxId);
+            console.log('DEBUG: Getting OAuth URL for workspace:', workspaceId);
+            const resp = await mailboxes.getOAuthUrl(token, workspaceId);
+            
+            if (!resp.auth_url) {
+                throw new Error('Failed to get authorization URL');
+            }
+            
+            console.log('DEBUG: Redirecting to Google for re-authentication');
+            window.location.href = resp.auth_url;
+        } catch (err: any) {
+            alert(`Failed to re-authenticate: ${err.message}`);
+            setRelinkingMailboxId(null);
+        }
+    };
+
+    const handleDisconnectMailbox = async (mailboxId: number, email: string) => {
+        if (!confirm(`Are you sure you want to disconnect ${email}?\n\nAny campaigns using this mailbox will be paused.`)) {
+            return;
+        }
+
+        try {
+            setDisconnectingMailboxId(mailboxId);
+            console.log('DEBUG: Disconnecting mailbox:', mailboxId);
+            await mailboxes.disconnect(token!, mailboxId);
+            
+            // Refresh mailbox list
+            const updatedMailboxes = await mailboxes.list(token!, workspaceId!);
+            setConnectedMailboxes(updatedMailboxes);
+            
+            console.log('DEBUG: Mailbox disconnected successfully');
+        } catch (err: any) {
+            alert(`Failed to disconnect mailbox: ${err.message}`);
+        } finally {
+            setDisconnectingMailboxId(null);
+        }
+    };
+
+    const handleAddMailbox = async () => {
+        if (!token || !workspaceId) {
+            alert('Session expired. Please reload the page.');
+            return;
+        }
+        
+        try {
+            console.log('DEBUG: Getting OAuth URL for new mailbox, workspace:', workspaceId);
+            const resp = await mailboxes.getOAuthUrl(token, workspaceId);
+            
+            if (!resp.auth_url) {
+                throw new Error('Failed to get authorization URL');
+            }
+            
+            console.log('DEBUG: Redirecting to Google to add new mailbox');
+            window.location.href = resp.auth_url;
+        } catch (err: any) {
+            alert(`Failed to add mailbox: ${err.message}`);
+        }
     };
 
     const handleTerminate = async (id: number) => {
@@ -349,18 +417,35 @@ export default function DashboardPage() {
 
                 {/* Connected Mailboxes */}
                 <div>
-                    <h2 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '16px' }}>
-                        Connected Mailboxes
-                    </h2>
+                    <div style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: '16px',
+                    }}>
+                        <h2 style={{ fontSize: '18px', fontWeight: '600' }}>
+                            Connected Mailboxes
+                        </h2>
+                        <button
+                            onClick={handleAddMailbox}
+                            className="btn btn-primary"
+                            style={{ fontSize: '14px' }}
+                        >
+                            + Add Mailbox
+                        </button>
+                    </div>
 
                     {connectedMailboxes.length === 0 ? (
                         <div className="card" style={{ textAlign: 'center', padding: '32px' }}>
                             <p style={{ color: 'var(--text-secondary)', marginBottom: '16px' }}>
                                 No mailboxes connected
                             </p>
-                            <Link href="/wizard">
-                                <button className="btn btn-secondary">Connect Gmail</button>
-                            </Link>
+                            <button
+                                onClick={handleAddMailbox}
+                                className="btn btn-secondary"
+                            >
+                                Connect Gmail
+                            </button>
                         </div>
                     ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -378,15 +463,53 @@ export default function DashboardPage() {
                                         }}>
                                             📬
                                         </div>
-                                        <div>
+                                        <div style={{ flex: 1 }}>
                                             <div style={{ fontWeight: '500' }}>{mailbox.email}</div>
                                             <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
                                                 Connected {new Date(mailbox.connected_at).toLocaleDateString()}
                                             </div>
                                         </div>
-                                        <span className={`badge badge-${mailbox.is_active ? 'success' : 'danger'}`} style={{ marginLeft: 'auto' }}>
+                                        <span className={`badge badge-${mailbox.is_active ? 'success' : 'danger'}`}>
                                             {mailbox.is_active ? 'Active' : 'Inactive'}
                                         </span>
+                                        <div style={{ display: 'flex', gap: '8px' }}>
+                                            {!mailbox.is_active && (
+                                                <button
+                                                    onClick={() => handleRelinkMailbox(mailbox.id)}
+                                                    disabled={relinkingMailboxId === mailbox.id}
+                                                    style={{
+                                                        background: 'rgba(33, 150, 243, 0.1)',
+                                                        border: '1px solid rgba(33, 150, 243, 0.2)',
+                                                        color: '#2196f3',
+                                                        padding: '6px 12px',
+                                                        borderRadius: '6px',
+                                                        fontSize: '12px',
+                                                        fontWeight: '600',
+                                                        cursor: relinkingMailboxId === mailbox.id ? 'not-allowed' : 'pointer',
+                                                        opacity: relinkingMailboxId === mailbox.id ? 0.6 : 1,
+                                                    }}
+                                                >
+                                                    {relinkingMailboxId === mailbox.id ? '🔄 Redirecting...' : '🔄 Re-link'}
+                                                </button>
+                                            )}
+                                            <button
+                                                onClick={() => handleDisconnectMailbox(mailbox.id, mailbox.email)}
+                                                disabled={disconnectingMailboxId === mailbox.id}
+                                                style={{
+                                                    background: 'rgba(255, 71, 87, 0.1)',
+                                                    border: '1px solid rgba(255, 71, 87, 0.2)',
+                                                    color: '#ff4757',
+                                                    padding: '6px 12px',
+                                                    borderRadius: '6px',
+                                                    fontSize: '12px',
+                                                    fontWeight: '600',
+                                                    cursor: disconnectingMailboxId === mailbox.id ? 'not-allowed' : 'pointer',
+                                                    opacity: disconnectingMailboxId === mailbox.id ? 0.6 : 1,
+                                                }}
+                                            >
+                                                {disconnectingMailboxId === mailbox.id ? '⏳' : '✕ Disconnect'}
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             ))}

@@ -102,6 +102,7 @@ class GmailService:
         return access_encrypted, refresh_encrypted, credentials.expiry, email
     
     @staticmethod
+    @staticmethod
     def get_credentials_from_encrypted(
         access_token_encrypted: bytes,
         refresh_token_encrypted: bytes,
@@ -110,6 +111,8 @@ class GmailService:
         """
         Get credentials from encrypted tokens.
         Refreshes if expired.
+        
+        Fix B2: Handle refresh errors gracefully
         """
         access_token, refresh_token = decrypt_oauth_tokens(
             access_token_encrypted,
@@ -130,7 +133,15 @@ class GmailService:
         
         # Refresh if expired
         if credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
+            try:
+                credentials.refresh(Request())
+            except RefreshError as e:
+                # Let caller handle refresh errors
+                logger.warning(f"Token refresh failed: {e}")
+                raise ValueError(f"Token refresh failed: {str(e)}")
+            except Exception as e:
+                logger.warning(f"Unexpected error during token refresh: {e}")
+                raise ValueError(f"Token refresh error: {str(e)}")
         
         return credentials
     
@@ -178,6 +189,7 @@ class GmailService:
             # Refresh if expired
             if credentials.expired:
                 try:
+                    logger.debug(f"Refreshing expired token for mailbox {mailbox.id}")
                     credentials.refresh(Request())
                     
                     # Save refreshed tokens
@@ -188,13 +200,19 @@ class GmailService:
                     mailbox.access_token_encrypted = access_enc
                     mailbox.refresh_token_encrypted = refresh_enc
                     mailbox.token_expiry = credentials.expiry
+                    mailbox.status = MailboxStatus.ACTIVE
                     db.commit()
                     
-                    logger.info(f"Refreshed tokens for mailbox {mailbox.id}")
+                    logger.info(f"Successfully refreshed tokens for mailbox {mailbox.id}, token expires at {credentials.expiry}")
                     
                 except RefreshError as e:
-                    logger.error(f"Token refresh failed for mailbox {mailbox.id}: {e}")
-                    GmailService._mark_reauth_required(db, mailbox, "Token refresh failed")
+                    logger.error(f"Token refresh failed for mailbox {mailbox.id}: {str(e)}")
+                    logger.error(f"Error type: {type(e).__name__}, Error code: {getattr(e, 'code', 'unknown')}")
+                    GmailService._mark_reauth_required(db, mailbox, f"Token refresh failed: {str(e)}")
+                    return None, mailbox
+                except Exception as e:
+                    logger.error(f"Unexpected error refreshing token for mailbox {mailbox.id}: {str(e)}")
+                    GmailService._mark_reauth_required(db, mailbox, f"Token refresh error: {str(e)}")
                     return None, mailbox
             
             service = build("gmail", "v1", credentials=credentials)
@@ -316,11 +334,12 @@ class GmailService:
             if last_history_id:
                 try:
                     # Incremental sync using history
+                    # Note: labelIds is not a valid parameter for history().list()
+                    # History API automatically tracks messages added to inbox
                     history_response = service.users().history().list(
                         userId="me",
                         startHistoryId=last_history_id,
-                        historyTypes=["messageAdded"],
-                        labelIds=["INBOX"]
+                        historyTypes=["messageAdded"]
                     ).execute()
                     
                     new_history_id = history_response.get("historyId", last_history_id)
@@ -339,16 +358,54 @@ class GmailService:
                             id=msg_id,
                             format="full"
                         ).execute()
-                        new_messages.append(GmailService._parse_message(message))
+                        
+                        # Filter to only INBOX messages (exclude sent, drafts, etc.)
+                        label_ids = message.get("labelIds", [])
+                        if "INBOX" in label_ids:
+                            parsed_msg = GmailService._parse_message(message)
+                            new_messages.append(parsed_msg)
                         
                 except HttpError as e:
                     # Fix A3: Handle historyId too old (404) or invalid
                     if e.resp.status in [404, 400]:
-                        logger.warning(f"History ID expired or invalid, resetting cursor")
-                        # Reset to current history ID without scanning
+                        logger.warning(f"History ID expired or invalid, resetting cursor. Scanning recent messages to catch up.")
+                        # Reset to current history ID
                         new_history_id = GmailService.get_mailbox_history_id(service)
-                        # Return empty - we'll catch up on next poll
-                        return [], new_history_id
+                        
+                        # Scan recent messages from inbox to catch any missed replies
+                        # Get messages from last 7 days to catch recent replies
+                        try:
+                            from datetime import datetime, timedelta
+                            after_date = int((datetime.utcnow() - timedelta(days=7)).timestamp() * 1000)
+                            
+                            messages_response = service.users().messages().list(
+                                userId="me",
+                                q="in:inbox",
+                                maxResults=50
+                            ).execute()
+                            
+                            message_ids = [msg["id"] for msg in messages_response.get("messages", [])]
+                            
+                            for msg_id in message_ids:
+                                message = service.users().messages().get(
+                                    userId="me",
+                                    id=msg_id,
+                                    format="full"
+                                ).execute()
+                                
+                                # Only process if in INBOX and recent
+                                label_ids = message.get("labelIds", [])
+                                internal_date = int(message.get("internalDate", 0))
+                                
+                                if "INBOX" in label_ids and internal_date >= after_date:
+                                    parsed_msg = GmailService._parse_message(message)
+                                    new_messages.append(parsed_msg)
+                            
+                            logger.info(f"Scanned {len(new_messages)} recent messages after history reset")
+                        except Exception as scan_error:
+                            logger.error(f"Error scanning recent messages: {scan_error}")
+                        
+                        return new_messages, new_history_id
                     else:
                         raise
                     

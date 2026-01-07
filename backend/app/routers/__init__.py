@@ -1,7 +1,8 @@
 """
 Routers package.
 """
-from app.routers import auth, workspaces, mailboxes, domains, leads, campaigns, inbox, booking
+from app.routers import auth, workspaces, mailboxes, domains, leads, campaigns, inbox, booking, health
+
 
 __all__ = [
     "auth",
@@ -12,4 +13,6 @@ __all__ = [
     "campaigns",
     "inbox",
     "booking",
+    "health",
 ]
+

@@ -4,6 +4,7 @@ Inbox router - view and manage replies.
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
+import re
 
 from app.database import get_db
 from app.models import (
@@ -18,6 +19,31 @@ from app.services.gmail_service import GmailService
 from datetime import datetime
 
 router = APIRouter()
+import logging
+logger = logging.getLogger(__name__)
+
+
+def clean_message_body(body: str) -> str:
+    """
+    Remove quoted/previous message content from email bodies.
+    Strips everything from "On <date> at <time>, <email> wrote:" onwards.
+    """
+    if not body:
+        return body
+    
+    # Match the quoted message pattern: "On <date> at <time>, <email> wrote:"
+    # This is the standard Gmail/Outlook format for quoted messages
+    pattern = r'On\s+.+?at\s+.+?,\s+<?.+?@.+?\.com>?\s+wrote:'
+    
+    # Find the first occurrence of the quoted message pattern
+    match = re.search(pattern, body, re.IGNORECASE | re.DOTALL)
+    
+    if match:
+        # Return only the part before the quoted message
+        cleaned = body[:match.start()].strip()
+        return cleaned
+    
+    return body.strip()
 
 
 @router.get("/replies", response_model=List[ReplyResponse])
@@ -32,6 +58,7 @@ async def list_replies(
     """
     List all replies for a workspace, optionally filtered by campaign.
     """
+    
     # Verify workspace belongs to user
     workspace = db.query(Workspace).filter(
         Workspace.id == workspace_id,
@@ -44,32 +71,83 @@ async def list_replies(
             detail="Workspace not found"
         )
     
-    # Build query
-    query = db.query(Message).join(CampaignLead).join(Campaign).filter(
-        Campaign.workspace_id == workspace_id,
-        Message.direction == MessageDirection.INBOUND
+    logger.info(f"Fetching replies for workspace {workspace_id}, user {current_user.id}")
+    
+    # Get all campaign_lead IDs for this workspace
+    campaign_leads_query = db.query(CampaignLead.id).join(
+        Campaign, CampaignLead.campaign_id == Campaign.id
+    ).filter(
+        Campaign.workspace_id == workspace_id
     )
     
     if campaign_id:
-        query = query.filter(Campaign.id == campaign_id)
+        campaign_leads_query = campaign_leads_query.filter(Campaign.id == campaign_id)
+        logger.info(f"Filtering by campaign_id: {campaign_id}")
     
-    replies = query.order_by(Message.received_at.desc()).offset(skip).limit(limit).all()
+    campaign_lead_ids = [cl[0] for cl in campaign_leads_query.all()]
+    logger.info(f"Found {len(campaign_lead_ids)} campaign_leads in workspace")
     
-    # Build response with lead info
+    if not campaign_lead_ids:
+        logger.info("No campaign leads found, returning empty list")
+        return []
+    
+    # For each campaign_lead, get the LATEST message (by received_at or sent_at)
+    # This shows one item per conversation
     result = []
-    for reply in replies:
-        lead = reply.campaign_lead.lead
-        result.append(ReplyResponse(
-            id=reply.id,
-            lead_email=lead.email,
-            lead_name=f"{lead.first_name or ''} {lead.last_name or ''}".strip() or None,
-            subject=reply.subject,
-            body=reply.body,
-            classification=reply.classification,
-            received_at=reply.received_at
-        ))
+    for cl_id in campaign_lead_ids:
+        # Get the latest message for this conversation
+        # Try received_at first (for inbound), then sent_at (for outbound)
+        latest_msg = db.query(Message).filter(
+            Message.campaign_lead_id == cl_id
+        ).order_by(
+            Message.received_at.desc().nullslast(),
+            Message.sent_at.desc().nullslast(),
+            Message.id.desc()
+        ).first()
+        
+        if not latest_msg:
+            continue
+        
+        try:
+            campaign_lead = db.query(CampaignLead).get(cl_id)
+            if not campaign_lead:
+                continue
+                
+            lead = campaign_lead.lead
+            campaign = campaign_lead.campaign
+            
+            # Only clean body for inbound messages (replies)
+            if latest_msg.direction == MessageDirection.INBOUND:
+                cleaned_body = clean_message_body(latest_msg.body)
+            else:
+                cleaned_body = latest_msg.body
+            
+            result.append(ReplyResponse(
+                id=latest_msg.id,
+                lead_email=lead.email,
+                lead_name=f"{lead.first_name or ''} {lead.last_name or ''}".strip() or None,
+                campaign_name=campaign.name,
+                subject=latest_msg.subject,
+                body=cleaned_body,
+                classification=latest_msg.classification,
+                received_at=latest_msg.received_at or latest_msg.sent_at,
+                direction=latest_msg.direction.value
+            ))
+        except Exception as e:
+            logger.error(f"Error building response for campaign_lead {cl_id}: {e}")
+            continue
     
-    return result
+    # Sort by timestamp descending (newest first)
+    result.sort(key=lambda x: x.received_at or '', reverse=True)
+    
+    # Apply pagination
+    total_count = len(result)
+    logger.info(f"Found {total_count} total conversations")
+    
+    paginated_result = result[skip:skip+limit]
+    logger.info(f"Returning {len(paginated_result)} conversation threads (skip={skip}, limit={limit})")
+    
+    return paginated_result
 
 
 @router.post("/replies/{reply_id}/classify", response_model=ReplyResponse)
@@ -112,10 +190,12 @@ async def classify_reply(
     db.refresh(reply)
     
     lead = reply.campaign_lead.lead
+    campaign = reply.campaign_lead.campaign
     return ReplyResponse(
         id=reply.id,
         lead_email=lead.email,
         lead_name=f"{lead.first_name or ''} {lead.last_name or ''}".strip() or None,
+        campaign_name=campaign.name,
         subject=reply.subject,
         body=reply.body,
         classification=reply.classification,
@@ -147,21 +227,27 @@ async def get_reply(
     lead = reply.campaign_lead.lead
     campaign = reply.campaign_lead.campaign
     
-    # Get all messages in the same thread
+    # Get all messages in the same thread, sorted newest first
     thread_messages = db.query(Message).filter(
         Message.gmail_thread_id == reply.gmail_thread_id
-    ).order_by(Message.received_at.asc(), Message.sent_at.asc()).all()
+    ).order_by(Message.received_at.desc(), Message.sent_at.desc()).all()
     
     messages_data = []
     for msg in thread_messages:
+        # Clean body for inbound messages only
+        if msg.direction == MessageDirection.INBOUND:
+            msg_body = clean_message_body(msg.body)
+        else:
+            msg_body = msg.body
+        
         messages_data.append({
             "id": msg.id,
-            "direction": msg.direction,
+            "direction": msg.direction.value,  # Convert Enum to string
             "subject": msg.subject,
-            "body": msg.body,
+            "body": msg_body,
             "received_at": msg.received_at,
             "sent_at": msg.sent_at,
-            "classification": msg.classification,
+            "classification": msg.classification.value if msg.classification else None,  # Convert Enum to string
         })
 
     # Get classification explanation
@@ -277,3 +363,96 @@ async def send_reply(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to send reply: {str(e)}"
         )
+
+
+@router.get("/debug/replies")
+async def debug_replies(
+    workspace_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Debug endpoint to check reply data in database.
+    Returns detailed information about messages and relationships.
+    """
+    # Verify workspace
+    workspace = db.query(Workspace).filter(
+        Workspace.id == workspace_id,
+        Workspace.user_id == current_user.id
+    ).first()
+    
+    if not workspace:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found"
+        )
+    
+    # Count all messages
+    total_messages = db.query(Message).count()
+    inbound_messages = db.query(Message).filter(
+        Message.direction == MessageDirection.INBOUND
+    ).count()
+    outbound_messages = db.query(Message).filter(
+        Message.direction == MessageDirection.OUTBOUND
+    ).count()
+    
+    # Count messages for this workspace
+    workspace_messages = db.query(Message).join(
+        CampaignLead, Message.campaign_lead_id == CampaignLead.id
+    ).join(
+        Campaign, CampaignLead.campaign_id == Campaign.id
+    ).filter(
+        Campaign.workspace_id == workspace_id
+    ).count()
+    
+    workspace_inbound = db.query(Message).join(
+        CampaignLead, Message.campaign_lead_id == CampaignLead.id
+    ).join(
+        Campaign, CampaignLead.campaign_id == Campaign.id
+    ).filter(
+        Campaign.workspace_id == workspace_id,
+        Message.direction == MessageDirection.INBOUND
+    ).count()
+    
+    # Get sample messages
+    sample_messages = db.query(Message).join(
+        CampaignLead, Message.campaign_lead_id == CampaignLead.id
+    ).join(
+        Campaign, CampaignLead.campaign_id == Campaign.id
+    ).filter(
+        Campaign.workspace_id == workspace_id,
+        Message.direction == MessageDirection.INBOUND
+    ).limit(5).all()
+    
+    sample_data = []
+    for msg in sample_messages:
+        try:
+            sample_data.append({
+                "message_id": msg.id,
+                "campaign_lead_id": msg.campaign_lead_id,
+                "subject": msg.subject,
+                "received_at": str(msg.received_at) if msg.received_at else None,
+                "classification": msg.classification.value if msg.classification else None,
+                "has_campaign_lead": msg.campaign_lead is not None,
+                "has_lead": msg.campaign_lead.lead is not None if msg.campaign_lead else False,
+                "has_campaign": msg.campaign_lead.campaign is not None if msg.campaign_lead else False,
+            })
+        except Exception as e:
+            sample_data.append({
+                "message_id": msg.id,
+                "error": str(e)
+            })
+    
+    return {
+        "workspace_id": workspace_id,
+        "total_messages_in_db": total_messages,
+        "total_inbound_messages": inbound_messages,
+        "total_outbound_messages": outbound_messages,
+        "workspace_messages_total": workspace_messages,
+        "workspace_inbound_messages": workspace_inbound,
+        "sample_messages": sample_data,
+        "campaigns_count": db.query(Campaign).filter(Campaign.workspace_id == workspace_id).count(),
+        "campaign_leads_count": db.query(CampaignLead).join(Campaign).filter(
+            Campaign.workspace_id == workspace_id
+        ).count(),
+    }
