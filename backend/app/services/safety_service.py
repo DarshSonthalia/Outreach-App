@@ -72,7 +72,7 @@ class SafetyService:
     @staticmethod
     def get_daily_send_count(db: Session, mailbox_id: int, target_date: date = None) -> int:
         """Get the number of emails sent today from a mailbox."""
-        target_date = target_date or date.today()
+        target_date = target_date or datetime.utcnow().date()
         start_of_day = datetime.combine(target_date, datetime.min.time())
         end_of_day = datetime.combine(target_date, datetime.max.time())
         

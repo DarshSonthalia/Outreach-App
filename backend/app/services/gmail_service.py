@@ -261,13 +261,14 @@ class GmailService:
         to_email: str,
         subject: str,
         body: str,
-        reply_to_thread_id: Optional[str] = None
+        reply_to_thread_id: Optional[str] = None,
+        reply_to_message_id: Optional[str] = None  # Original Gmail API Message ID (not header)
     ) -> Tuple[str, str]:
         """
         Send an email via Gmail API.
         Returns (message_id, thread_id).
         
-        IMPORTANT: This sends the email immediately, not as a draft.
+        Fix for Threading: Fetches original Message-ID to set In-Reply-To/References.
         """
         service = build("gmail", "v1", credentials=credentials)
         
@@ -275,6 +276,33 @@ class GmailService:
         message = MIMEText(body)
         message["to"] = to_email
         message["subject"] = subject
+        
+        # Robust Threading: If replying, set proper headers
+        if reply_to_message_id:
+            try:
+                # Fetch original message to get its RFC Message-ID header
+                orig_msg = service.users().messages().get(
+                    userId="me", 
+                    id=reply_to_message_id, 
+                    format="metadata", 
+                    metadataHeaders=["Message-ID", "References"]
+                ).execute()
+                
+                headers = orig_msg.get("payload", {}).get("headers", [])
+                rfc_message_id = next((h["value"] for h in headers if h["name"].lower() == "message-id"), "")
+                rfc_references = next((h["value"] for h in headers if h["name"].lower() == "references"), "")
+                
+                if rfc_message_id:
+                    message["In-Reply-To"] = rfc_message_id
+                    # References should append original ID to existing references
+                    if rfc_references:
+                        message["References"] = f"{rfc_references} {rfc_message_id}"
+                    else:
+                        message["References"] = rfc_message_id
+                        
+            except Exception as e:
+                logger.warning(f"Failed to fetch original message for headers: {e}")
+                # Continue without headers, relying on threadId
         
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
         

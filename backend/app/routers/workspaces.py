@@ -4,9 +4,10 @@ Workspace router - create workspace, update setup wizard answers.
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
+from datetime import datetime
 
 from app.database import get_db
-from app.models import User, Workspace
+from app.models import User, Workspace, Event
 from app.schemas import WorkspaceCreate, WorkspaceSetup, WorkspaceResponse
 from app.utils.dependencies import get_current_user
 
@@ -22,13 +23,26 @@ async def create_workspace(
     """
     Create a new workspace for the user.
     """
+    today = datetime.utcnow()
     workspace = Workspace(
         user_id=current_user.id,
-        name=workspace_data.name
+        name=workspace_data.name,
+        warmup_enabled=True,
+        warmup_start_date=today
     )
     db.add(workspace)
     db.commit()
     db.refresh(workspace)
+    
+    # Log warm-up start
+    event = Event(
+        entity_type="workspace",
+        entity_id=workspace.id,
+        action="WARMUP_STARTED",
+        explanation="Domain warm-up started automatically for new workspace."
+    )
+    db.add(event)
+    db.commit()
     
     return workspace
 

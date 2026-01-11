@@ -80,9 +80,9 @@ const WIZARD_STEPS: Message[] = [
     {
         id: 8,
         type: 'bot',
-        content: "Perfect! Now let's connect your Gmail inbox. Click below to authorize:",
+        content: "Perfect! You're all set. Let's go to your dashboard to start your first campaign.",
         inputType: 'button',
-        action: 'connect_gmail',
+        action: 'complete_setup',
     },
 ];
 
@@ -191,8 +191,8 @@ export default function WizardPage() {
         setSetupData(newSetupData);
 
         // Handle special actions
-        if (action === 'connect_gmail') {
-            console.log('DEBUG: [WIZARD] Final step - Connecting Gmail...');
+        if (action === 'complete_setup') {
+            console.log('DEBUG: [WIZARD] Final step - Completing setup...');
 
             if (!token || !workspaceId) {
                 const msg = `Configuration Error: ${!token ? 'Missing authentication token' : 'Workspace ID not found'}. Please refresh and try again.`;
@@ -203,7 +203,6 @@ export default function WizardPage() {
 
             try {
                 // Fix: Only send fields that the backend expects (WorkspaceSetup schema)
-                // Filter out 'connect_gmail' and any other internal UI keys
                 const payload = {
                     what_you_sell: newSetupData.what_you_sell || '',
                     target_industry: newSetupData.target_industry || '',
@@ -221,20 +220,12 @@ export default function WizardPage() {
                 await workspaces.updateSetup(token, workspaceId, payload);
                 console.log('DEBUG: [WIZARD] Setup saved successfully.');
 
-                console.log('DEBUG: [WIZARD] Fetching OAuth URL...');
-                const resp = await mailboxes.getOAuthUrl(token, workspaceId);
-                console.log('DEBUG: [WIZARD] Authentication URL received:', resp.auth_url);
-
-                if (!resp.auth_url) {
-                    throw new Error('The server returned an empty authorization URL. Please contact support.');
-                }
-
-                console.log('DEBUG: [WIZARD] REDIRECTING USER TO GOOGLE...');
-                window.location.href = resp.auth_url;
+                console.log('DEBUG: [WIZARD] Redirecting to Dashboard...');
+                router.push('/dashboard');
                 return;
             } catch (err: any) {
                 console.error('DEBUG: [WIZARD] Critical failure in setup flow:', err);
-                alert(`Wizard error: ${err.message || 'The server encounterd an error while preparing your connection. Please check your internet and try again.'}`);
+                alert(`Wizard error: ${err.message || 'The server encounterd an error while saving your setup. Please try again.'}`);
             }
         }
 
@@ -360,7 +351,7 @@ export default function WizardPage() {
                         onClick={() => handleUserInput('Connect Gmail', currentMessage.action)}
                         style={{ width: '100%' }}
                     >
-                        {currentMessage.action === 'connect_gmail' ? '🔗 Connect Gmail' : '→ Go to Dashboard'}
+                        {currentMessage.action === 'complete_setup' ? '🚀 Go to Dashboard' : '→ Go to Dashboard'}
                     </button>
                 )}
 

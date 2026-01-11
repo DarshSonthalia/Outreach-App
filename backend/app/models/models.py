@@ -32,6 +32,9 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+    
     
     # Relationships
     workspaces = relationship("Workspace", back_populates="user")
@@ -59,6 +62,11 @@ class Workspace(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Warm-up (new fields)
+    warmup_enabled = Column(Boolean, default=False, nullable=False)
+    warmup_start_date = Column(DateTime, nullable=True)
+    
     
     # Relationships
     user = relationship("User", back_populates="workspaces")
@@ -96,6 +104,8 @@ class Mailbox(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
     
     # Relationships
     workspace = relationship("Workspace", back_populates="mailboxes")
@@ -117,6 +127,10 @@ class Domain(Base):
     spf_record = Column(Text, nullable=True)
     dmarc_valid = Column(Boolean, nullable=True)
     dmarc_record = Column(Text, nullable=True)
+
+    # Warm-up Status
+    warmup_day = Column(Integer, default=0, nullable=False)
+    warmup_completed = Column(Boolean, default=False, nullable=False)
     
     last_checked_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -184,6 +198,10 @@ class Campaign(Base):
     launched_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+    # Per-campaign customer info overrides
+    customer_info = Column(JSON, nullable=True)
     
     # Relationships
     workspace = relationship("Workspace", back_populates="campaigns")
@@ -215,6 +233,8 @@ class CampaignLead(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
     
     # Relationships
     campaign = relationship("Campaign", back_populates="campaign_leads")
@@ -317,6 +337,8 @@ class RiskSnapshot(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
     
     # Relationships
     domain = relationship("Domain", back_populates="risk_snapshots")

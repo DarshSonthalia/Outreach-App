@@ -8,7 +8,7 @@ import logging
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import engine, Base
-from app.routers import auth, workspaces, mailboxes, domains, leads, campaigns, inbox, booking, health
+from app.routers import auth, workspaces, mailboxes, domains, leads, campaigns, inbox, booking, health, campaigns_ai, inbox_ai
 
 
 # Fix H4: Use Alembic migrations instead of create_all in production
@@ -55,7 +55,9 @@ app.include_router(mailboxes.router, prefix="/api/mailboxes", tags=["Mailboxes"]
 app.include_router(domains.router, prefix="/api/domains", tags=["Domains"])
 app.include_router(leads.router, prefix="/api/leads", tags=["Leads"])
 app.include_router(campaigns.router, prefix="/api/campaigns", tags=["Campaigns"])
+app.include_router(campaigns_ai.router)  # AI endpoints use their own prefix
 app.include_router(inbox.router, prefix="/api/inbox", tags=["Inbox"])
+app.include_router(inbox_ai.router)  # AI endpoints use their own prefix
 app.include_router(booking.router, prefix="/api/booking", tags=["Booking"])
 app.include_router(health.router, prefix="/api/health", tags=["Health"])
 

@@ -21,6 +21,7 @@ from app.models import (
 )
 from app.services.gmail_service import GmailService
 from app.services.safety_service import SafetyService
+from app.services.warmup_service import WarmupService
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,45 @@ def process_single_send(db: Session, campaign_lead: CampaignLead):
         advance_to_next_step(db, campaign_lead, campaign)
         return
     
+    # Warm-up Enforcement (Step 5)
+    # Refinement: Only enforce on Step 0 (Cold Emails) to prevent blocking active conversations
+    if step_number == 0:
+        domain = mailbox.domain
+        workspace = campaign.workspace
+        
+        if domain:
+            # Check if we should exit warm-up (Day 8+)
+            current_day = WarmupService.current_day(domain)
+            if current_day >= 8 and not domain.warmup_completed:
+                # Auto-exit if no recent issues (simplified: just complete if day 8 reached)
+                # In a full implementation, we'd check for pauses/bounces here as per Step 7
+                WarmupService.complete(domain)
+                db.add(domain)
+                db.commit()
+
+            warmup_limit = WarmupService.daily_limit(workspace, domain)
+            
+            if warmup_limit is not None:
+                sent_today = SafetyService.get_daily_send_count(db, mailbox.id)
+                if sent_today >= warmup_limit:
+                    logger.info(f"Warm-up limit reached ({warmup_limit}/day) for domain {domain.domain}")
+                    
+                    # Delay until tomorrow
+                    campaign_lead.status = CampaignLeadStatus.PENDING
+                    now = datetime.utcnow()
+                    tomorrow = datetime.combine(now.date() + timedelta(days=1), datetime.min.time())
+                    campaign_lead.next_action_at = tomorrow
+                    
+                    # Log event
+                    event = Event(
+                        entity_type="campaign_lead",
+                        entity_id=campaign_lead.id,
+                        action="WARMUP_LIMIT_REACHED",
+                        explanation=f"Warm-up cap {warmup_limit}/day enforced. {sent_today} sent today."
+                    )
+                    db.add(event)
+                    return
+
     # Run ALL safety checks (MANDATORY)
     safety_decision = SafetyService.run_all_safety_checks(
         db, campaign, campaign_lead, lead.email

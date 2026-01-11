@@ -205,6 +205,33 @@ export const campaigns = {
         }),
 };
 
+// Campaigns AI
+export const campaignsAI = {
+    generateDraft: (token: string, campaignId: number, tone: string, length: string, includeFollowup: boolean) =>
+        apiRequest<any>(`/api/campaigns/${campaignId}/ai/draft`, {
+            method: 'POST',
+            body: { tone, length, include_followup: includeFollowup },
+            token,
+        }),
+
+    lintEmail: (token: string, campaignId: number, subject: string, body: string, followupSubject?: string, followupBody?: string) =>
+        apiRequest<any>(`/api/campaigns/${campaignId}/ai/lint`, {
+            method: 'POST',
+            body: { subject, body, followup_subject: followupSubject, followup_body: followupBody },
+            token,
+        }),
+};
+
+// Inbox AI
+export const inboxAI = {
+    classify: (token: string, messageId: number) =>
+        apiRequest<any>(`/api/inbox/replies/${messageId}/ai/classify`, {
+            method: 'POST',
+            body: {},
+            token,
+        }),
+};
+
 // Inbox
 export const inbox = {
     replies: (token: string, workspaceId: number, campaignId?: number) => {
@@ -238,5 +265,7 @@ export default {
     domains,
     leads,
     campaigns,
+    campaignsAI,
     inbox,
+    inboxAI,
 };

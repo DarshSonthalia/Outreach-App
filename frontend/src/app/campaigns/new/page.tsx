@@ -3,12 +3,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { auth, workspaces, campaigns, mailboxes, leads } from '@/lib/api';
+import { auth, workspaces, campaigns, campaignsAI, mailboxes, leads } from '@/lib/api';
 
 export default function NewCampaignPage() {
     const router = useRouter();
     const [token, setToken] = useState<string | null>(null);
     const [workspaceId, setWorkspaceId] = useState<number | null>(null);
+    const [workspaceData, setWorkspaceData] = useState<any>(null);
     const [step, setStep] = useState(1);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -18,7 +19,16 @@ export default function NewCampaignPage() {
     const [mailboxList, setMailboxList] = useState<any[]>([]);
     const [leadList, setLeadList] = useState<any[]>([]);
 
-    // Form state
+    // Campaign Context Wizard (Step 1)
+    const [wizardData, setWizardData] = useState({
+        what_you_sell: '',
+        target_industry: '',
+        target_role: '',
+        target_region: '',
+        offer_type: 'consultation',
+    });
+
+    // Form state (Step 2+)
     const [name, setName] = useState('');
     const [selectedMailbox, setSelectedMailbox] = useState<number | null>(null);
     const [selectedLeads, setSelectedLeads] = useState<number[]>([]);
@@ -26,15 +36,21 @@ export default function NewCampaignPage() {
     const [body, setBody] = useState('');
     const [followupEnabled, setFollowupEnabled] = useState(true);
     const [followupDays, setFollowupDays] = useState(3);
+    const [followupSubject, setFollowupSubject] = useState('');
+    const [followupBody, setFollowupBody] = useState('');
 
     const [campaignId, setCampaignId] = useState<number | null>(null);
     const [preview, setPreview] = useState<any>(null);
+    const [generatingCopy, setGeneratingCopy] = useState(false);
+    const [draftResponse, setDraftResponse] = useState<any>(null);
+    const [lintResult, setLintResult] = useState<any>(null);
+    const [lintLoading, setLintLoading] = useState(false);
 
     // Add Leads Modal State
     const [showAddLeadsModal, setShowAddLeadsModal] = useState(false);
     const [addLeadsTab, setAddLeadsTab] = useState<'csv' | 'source'>('csv');
     const [csvFile, setCsvFile] = useState<File | null>(null);
-    const [csvMapping, setCsvMapping] = useState<any>(null); // Columns from backend
+    const [csvMapping, setCsvMapping] = useState<any>(null);
     const [csvColumns, setCsvColumns] = useState<string[]>([]);
     const [columnMap, setColumnMap] = useState({
         email: '',
@@ -63,6 +79,17 @@ export default function NewCampaignPage() {
                 }
                 const wsId = userWorkspaces[0].id;
                 setWorkspaceId(wsId);
+                setWorkspaceData(userWorkspaces[0]);
+
+                // Pre-fill wizard with workspace defaults if available
+                const ws = userWorkspaces[0];
+                setWizardData({
+                    what_you_sell: ws.what_you_sell || '',
+                    target_industry: ws.target_industry || '',
+                    target_role: ws.target_role || '',
+                    target_region: ws.target_region || '',
+                    offer_type: ws.offer_type || 'consultation',
+                });
 
                 const mboxes = await mailboxes.list(storedToken, wsId);
                 setMailboxList(mboxes);
@@ -90,19 +117,63 @@ export default function NewCampaignPage() {
         }
     };
 
+    const handleWizardNext = () => {
+        // Validate wizard data
+        if (!wizardData.what_you_sell.trim()) {
+            setError('Please describe what you sell');
+            return;
+        }
+        if (!wizardData.target_role.trim()) {
+            setError('Please specify your target role');
+            return;
+        }
+        setError(null);
+        setStep(2);
+    };
+
     const handleCreateCampaign = async () => {
         if (!token || !workspaceId || !selectedMailbox) return;
         setSaving(true);
         setError(null);
 
         try {
+            // Create campaign with wizard context
             const campaign = await campaigns.create(token, workspaceId, {
                 name,
                 mailbox_id: selectedMailbox,
                 lead_ids: selectedLeads,
+                customer_info: wizardData,
             });
             setCampaignId(campaign.id);
-            setStep(3);
+
+            // Auto-generate email copy using AI
+            setGeneratingCopy(true);
+            try {
+                const draft = await campaignsAI.generateDraft(
+                    token,
+                    campaign.id,
+                    'friendly',
+                    'medium',
+                    true
+                );
+                setDraftResponse(draft);
+                setSubject(draft.subject);
+                setBody(draft.body);
+                if (draft.followup_subject) {
+                    setFollowupSubject(draft.followup_subject);
+                }
+                if (draft.followup_body) {
+                    setFollowupBody(draft.followup_body);
+                }
+            } catch (draftErr: any) {
+                console.error('Error generating copy:', draftErr);
+                const draftErrMsg = draftErr?.detail || draftErr?.message || 'Failed to generate email copy';
+                setError(`Campaign created, but failed to generate copy: ${draftErrMsg}`);
+            } finally {
+                setGeneratingCopy(false);
+            }
+
+            setStep(4);
         } catch (err: any) {
             console.error('Error creating campaign:', err);
             const errorMsg = err?.detail || err?.message || 'Failed to create campaign';
@@ -122,11 +193,13 @@ export default function NewCampaignPage() {
                 body,
                 followup_enabled: followupEnabled,
                 followup_delay_days: followupDays,
+                followup_subject: followupSubject || undefined,
+                followup_body: followupBody || undefined,
             });
 
             const previewData = await campaigns.preview(token, campaignId);
             setPreview(previewData);
-            setStep(4);
+            setStep(5);
         } catch (err: any) {
             console.error('Error:', err);
             const errorMsg = err?.detail || err?.message || 'Failed to save email content';
@@ -163,7 +236,6 @@ export default function NewCampaignPage() {
             formData.append('file', csvFile);
             const res = await leads.uploadCsv(token, workspaceId, formData);
             setCsvColumns(res.columns);
-            // Auto-map common columns
             const map: any = { ...columnMap };
             res.columns.forEach((col: string) => {
                 const lower = col.toLowerCase();
@@ -174,7 +246,7 @@ export default function NewCampaignPage() {
                 else if (lower.includes('title') || lower.includes('role')) map.title = col;
             });
             setColumnMap(map);
-            setCsvMapping(true); // Switch to mapping view
+            setCsvMapping(true);
         } catch (err) {
             alert('Upload failed. Please check your CSV.');
         }
@@ -187,50 +259,11 @@ export default function NewCampaignPage() {
         try {
             const formData = new FormData();
             formData.append('file', csvFile);
-            formData.append('mapping', JSON.stringify(columnMap)); // Backend expects JSON in body for map endpoint? 
-            // Wait, leads.py map_columns takes mapping: CSVColumnMapping AND file: UploadFile. 
-            // FastAPI handles mixed form/json typically by treating JSON as a form field string if not using Depends properly.
-            // Let's check leads.py... it uses mapping: CSVColumnMapping which implies JSON body if not Form(...). 
-            // Actually, in FastAPI, if you mix File and Pydantic model, you usually need to make the Pydantic model Depends() or json string.
-            // Let's try sending mapping as fields in FormData for now? No, standard is weird.
-            // Let me check leads.py again. `mapping: CSVColumnMapping, file: UploadFile = File(...)`.
-            // Because one arg is File/Form, Pydantic model is NOT read from JSON body by default. It expects query params or needs special handling.
-            // The most robust way is to send each field: `mapping.email`, `mapping.first_name` etc as form fields? 
-            // OR the backend might fail. Let's assume for a moment the backend expects JSON. 
-            // Wait, I can't check backend leads.py easily right now without switching context.
-            // Let's assume the previous `leads.py` showed `mapping: CSVColumnMapping`. 
-            // To be safe, I will construct a JSON blob and valid FormData if possible, OR I will just append fields.
-            // Actually, let's look at `uploadCsv` in `api.ts`. It's fine.
-            // For `mapColumns`, I'll append the mapping as a JSON string field named 'mapping' if backend supports it, or individual fields.
-            // Let's assume individual fields to be safe if backend uses Form/Depends. 
-            // BUT, `leads.py` Step 839: `mapping: CSVColumnMapping`. It's a Request Body model. 
-            // Mixing Body and File is tricky. Usually requires `mapping: str = Body(...)` and then parsing.
-            // If the backend isn't set up for "Pydantic-in-Form", this might 422. 
-            // I'll assume the backend expects JSON encoded in a form field or individual helper.
-            // Let's try sending 'mapping' as a JSON string in formData.
-            // Wait, checking `leads.py` step 839 again... 
-            // `async def map_columns_and_import(workspace_id: int, mapping: CSVColumnMapping, ...)`
-            // It does NOT say `Depends`. So it expects JSON Body. 
-            // But `file` is `File(...)`. You CANNOT have JSON Body and File in same request easily (spec issue).
-            // It practically *must* be that `mapping` fields are expected as query params OR the backend is broken for this mixed type.
-            // Oh, unless `CSVColumnMapping` properties are sent as Form fields.
-            // Let's try sending `mapping` as a JSON string. If it fails, I'll fix it.
-
-            // Actually, looking at `api.ts` I just modified, I pass `formData`.
-            // I'll append `mapping` as a JSON string key, and hopefully backend parses it?
-            // If not, I'll need to send `email`, `first_name` etc as individual keys. 
-            // Let's try individual keys matching the model structure.
             formData.append('email', columnMap.email);
             if (columnMap.first_name) formData.append('first_name', columnMap.first_name);
             if (columnMap.last_name) formData.append('last_name', columnMap.last_name);
             if (columnMap.company) formData.append('company', columnMap.company);
             if (columnMap.title) formData.append('title', columnMap.title);
-
-            // Re-read leads.py from memory... 
-            // `leads.py` line 64: `mapping: CSVColumnMapping`.
-            // FastAPI automatically tries to read Pydantic models from Query params if it's GET, or Body if POST.
-            // Since it's Multimart/Form-data (due to File), it expects these as Form fields!
-            // So `email`, `first_name` should work as form fields.
 
             const res = await leads.mapColumns(token, workspaceId, formData);
 
@@ -254,11 +287,33 @@ export default function NewCampaignPage() {
             const res = await leads.source(token, workspaceId, domainList);
             setSourcingResults(res);
             await refreshLeads(token, workspaceId);
-            // Don't close modal yet, show results
         } catch (err) {
             alert('Sourcing failed.');
         }
         setSaving(false);
+    };
+
+    const handleRegenerateDraft = async () => {
+        if (!token || !campaignId) return;
+        setGeneratingCopy(true);
+        setError(null);
+        try {
+            const draft = await campaignsAI.generateDraft(
+                token,
+                campaignId,
+                'friendly',
+                'medium',
+                true
+            );
+            setDraftResponse(draft);
+            setSubject(draft.subject);
+            setBody(draft.body);
+            if (draft.followup_subject) setFollowupSubject(draft.followup_subject);
+            if (draft.followup_body) setFollowupBody(draft.followup_body);
+        } catch (err: any) {
+            setError('Failed to regenerate: ' + (err?.message || err));
+        }
+        setGeneratingCopy(false);
     };
 
     if (loading) {
@@ -268,6 +323,8 @@ export default function NewCampaignPage() {
             </div>
         );
     }
+
+    const stepLabels = ['Campaign Context', 'Setup', 'Select Leads', 'Email Copy', 'Launch'];
 
     return (
         <div style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
@@ -289,11 +346,12 @@ export default function NewCampaignPage() {
             <div style={{
                 display: 'flex',
                 justifyContent: 'center',
-                gap: '32px',
+                gap: '24px',
                 padding: '24px',
                 borderBottom: '1px solid var(--border-color)',
+                flexWrap: 'wrap',
             }}>
-                {['Setup', 'Select Leads', 'Email Copy', 'Launch'].map((label, i) => (
+                {stepLabels.map((label, i) => (
                     <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <div style={{
                             width: '28px',
@@ -308,7 +366,7 @@ export default function NewCampaignPage() {
                         }}>
                             {step > i + 1 ? '✓' : i + 1}
                         </div>
-                        <span style={{ color: step === i + 1 ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                        <span style={{ color: step === i + 1 ? 'var(--text-primary)' : 'var(--text-muted)', fontSize: '14px' }}>
                             {label}
                         </span>
                     </div>
@@ -317,8 +375,126 @@ export default function NewCampaignPage() {
 
             {/* Step Content */}
             <div className="container" style={{ maxWidth: '700px', padding: '32px 24px' }}>
-                {/* Step 1: Setup */}
+
+                {/* Step 1: Campaign Context Wizard */}
                 {step === 1 && (
+                    <div className="card">
+                        <div style={{ marginBottom: '24px' }}>
+                            <h2 style={{ fontSize: '20px', marginBottom: '8px' }}>
+                                🎯 Tell us about this campaign
+                            </h2>
+                            <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
+                                This information helps our AI write personalized, high-converting emails for your outreach.
+                            </p>
+                        </div>
+
+                        {error && (
+                            <div className="alert alert-danger" style={{ marginBottom: '24px' }}>
+                                <strong>Error:</strong> {error}
+                            </div>
+                        )}
+
+                        <div style={{ marginBottom: '20px' }}>
+                            <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)', fontWeight: '500' }}>
+                                What do you sell? <span style={{ color: 'var(--accent-danger)' }}>*</span>
+                            </label>
+                            <textarea
+                                className="input"
+                                value={wizardData.what_you_sell}
+                                onChange={(e) => setWizardData({ ...wizardData, what_you_sell: e.target.value })}
+                                placeholder="e.g., We help B2B SaaS companies reduce churn through predictive analytics and customer health scoring."
+                                rows={3}
+                                style={{ resize: 'vertical' }}
+                            />
+                            <small style={{ color: 'var(--text-muted)' }}>Be specific about the problem you solve and the value you provide.</small>
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)', fontWeight: '500' }}>
+                                    Target Industry
+                                </label>
+                                <input
+                                    type="text"
+                                    className="input"
+                                    value={wizardData.target_industry}
+                                    onChange={(e) => setWizardData({ ...wizardData, target_industry: e.target.value })}
+                                    placeholder="e.g., SaaS, FinTech, Healthcare"
+                                />
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)', fontWeight: '500' }}>
+                                    Target Role <span style={{ color: 'var(--accent-danger)' }}>*</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    className="input"
+                                    value={wizardData.target_role}
+                                    onChange={(e) => setWizardData({ ...wizardData, target_role: e.target.value })}
+                                    placeholder="e.g., VP of Sales, CTO, Head of Marketing"
+                                />
+                            </div>
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)', fontWeight: '500' }}>
+                                    Target Region
+                                </label>
+                                <input
+                                    type="text"
+                                    className="input"
+                                    value={wizardData.target_region}
+                                    onChange={(e) => setWizardData({ ...wizardData, target_region: e.target.value })}
+                                    placeholder="e.g., US, Europe, Global"
+                                />
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)', fontWeight: '500' }}>
+                                    What are you offering?
+                                </label>
+                                <select
+                                    className="input"
+                                    value={wizardData.offer_type}
+                                    onChange={(e) => setWizardData({ ...wizardData, offer_type: e.target.value })}
+                                >
+                                    <option value="consultation">Free Consultation</option>
+                                    <option value="demo">Product Demo</option>
+                                    <option value="audit">Free Audit</option>
+                                    <option value="call">Quick Call</option>
+                                    <option value="trial">Free Trial</option>
+                                    <option value="resource">Free Resource</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div style={{
+                            padding: '16px',
+                            background: 'var(--bg-secondary)',
+                            borderRadius: '8px',
+                            marginBottom: '24px',
+                            borderLeft: '4px solid var(--accent-primary)'
+                        }}>
+                            <div style={{ fontWeight: '600', marginBottom: '8px', fontSize: '14px' }}>💡 Pro Tips</div>
+                            <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+                                <li>Be specific about your value proposition—vague descriptions lead to generic emails</li>
+                                <li>The more context you provide, the better the AI-generated emails will convert</li>
+                                <li>You can refine the generated email copy in the next steps</li>
+                            </ul>
+                        </div>
+
+                        <button
+                            className="btn btn-primary"
+                            onClick={handleWizardNext}
+                            style={{ width: '100%' }}
+                        >
+                            Continue →
+                        </button>
+                    </div>
+                )}
+
+                {/* Step 2: Campaign Setup */}
+                {step === 2 && (
                     <div className="card">
                         <h2 style={{ fontSize: '18px', marginBottom: '24px' }}>Campaign Setup</h2>
 
@@ -356,18 +532,52 @@ export default function NewCampaignPage() {
                             </select>
                         </div>
 
-                        <button
-                            className="btn btn-primary"
-                            onClick={() => setStep(2)}
-                            disabled={!name || !selectedMailbox}
-                        >
-                            Continue
-                        </button>
+                        {/* Show campaign context summary */}
+                        <div style={{
+                            padding: '16px',
+                            background: 'var(--bg-secondary)',
+                            borderRadius: '8px',
+                            marginBottom: '20px',
+                        }}>
+                            <div style={{ fontWeight: '600', marginBottom: '12px', fontSize: '14px' }}>📋 Campaign Context</div>
+                            <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                                <div style={{ marginBottom: '4px' }}><strong>Selling:</strong> {wizardData.what_you_sell || '—'}</div>
+                                <div style={{ marginBottom: '4px' }}><strong>Target:</strong> {wizardData.target_role} {wizardData.target_industry ? `in ${wizardData.target_industry}` : ''}</div>
+                                <div><strong>Offer:</strong> {wizardData.offer_type}</div>
+                            </div>
+                            <button
+                                onClick={() => setStep(1)}
+                                style={{
+                                    marginTop: '12px',
+                                    background: 'none',
+                                    border: 'none',
+                                    color: 'var(--accent-primary)',
+                                    cursor: 'pointer',
+                                    fontSize: '13px',
+                                    padding: 0,
+                                }}
+                            >
+                                ← Edit context
+                            </button>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '12px' }}>
+                            <button className="btn btn-secondary" onClick={() => setStep(1)}>
+                                Back
+                            </button>
+                            <button
+                                className="btn btn-primary"
+                                onClick={() => setStep(3)}
+                                disabled={!name || !selectedMailbox}
+                            >
+                                Continue
+                            </button>
+                        </div>
                     </div>
                 )}
 
-                {/* Step 2: Select Leads */}
-                {step === 2 && (
+                {/* Step 3: Select Leads */}
+                {step === 3 && (
                     <div className="card">
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                             <h2 style={{ fontSize: '18px' }}>Select Leads</h2>
@@ -441,7 +651,7 @@ export default function NewCampaignPage() {
                                 </div>
 
                                 <div style={{ display: 'flex', gap: '12px' }}>
-                                    <button className="btn btn-secondary" onClick={() => setStep(1)}>
+                                    <button className="btn btn-secondary" onClick={() => setStep(2)}>
                                         Back
                                     </button>
                                     <button
@@ -457,12 +667,12 @@ export default function NewCampaignPage() {
                     </div>
                 )}
 
-                {/* Step 3 & 4 remain the same... omitting for brevity if file already has them, but assuming I'm overwriting full file I should include them. */}
-                {/* To ensure file correctness I must include all. */}
-                {/* Step 3: Email Copy */}
-                {step === 3 && (
+                {/* Step 4: Email Copy */}
+                {step === 4 && (
                     <div className="card">
-                        <h2 style={{ fontSize: '18px', marginBottom: '24px' }}>Email Content</h2>
+                        <h2 style={{ fontSize: '18px', marginBottom: '24px' }}>
+                            ✨ AI-Generated Email Content
+                        </h2>
 
                         {error && (
                             <div className="alert alert-danger" style={{ marginBottom: '24px' }}>
@@ -470,81 +680,174 @@ export default function NewCampaignPage() {
                             </div>
                         )}
 
-                        <div style={{ marginBottom: '20px' }}>
-                            <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)' }}>
-                                Subject Line
-                            </label>
-                            <input
-                                type="text"
-                                className="input"
-                                value={subject}
-                                onChange={(e) => setSubject(e.target.value)}
-                                placeholder="Quick question, {{first_name}}"
-                            />
-                        </div>
-
-                        <div style={{ marginBottom: '20px' }}>
-                            <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)' }}>
-                                Email Body
-                            </label>
-                            <textarea
-                                className="input"
-                                value={body}
-                                onChange={(e) => setBody(e.target.value)}
-                                placeholder="Hi {{first_name}},&#10;&#10;I noticed {{company}} is..."
-                                rows={8}
-                                style={{ resize: 'vertical' }}
-                            />
-                            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                                Use {'{{first_name}}'} and {'{{company}}'} for personalization
-                            </div>
-                        </div>
-
-                        <div style={{ marginBottom: '20px' }}>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                <input
-                                    type="checkbox"
-                                    checked={followupEnabled}
-                                    onChange={(e) => setFollowupEnabled(e.target.checked)}
-                                />
-                                <span>Enable follow-up emails</span>
-                            </label>
-                            {followupEnabled && (
-                                <div style={{ marginTop: '12px', paddingLeft: '24px' }}>
-                                    <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)' }}>
-                                        Days between follow-ups
-                                    </label>
-                                    <select
-                                        className="input"
-                                        value={followupDays}
-                                        onChange={(e) => setFollowupDays(Number(e.target.value))}
-                                        style={{ width: 'auto' }}
-                                    >
-                                        {[2, 3, 4, 5, 7].map(d => (
-                                            <option key={d} value={d}>{d} days</option>
-                                        ))}
-                                    </select>
+                        {generatingCopy && (
+                            <div style={{
+                                padding: '32px',
+                                textAlign: 'center',
+                                border: '2px dashed var(--border-color)',
+                                borderRadius: '8px',
+                                marginBottom: '24px',
+                                background: 'var(--bg-secondary)'
+                            }}>
+                                <div style={{ marginBottom: '12px', fontSize: '32px' }}>🤖</div>
+                                <div style={{ fontSize: '14px', fontWeight: '500', marginBottom: '4px' }}>
+                                    Generating your email copy...
                                 </div>
-                            )}
-                        </div>
+                                <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                                    This usually takes 2-5 seconds
+                                </div>
+                            </div>
+                        )}
 
-                        <div style={{ display: 'flex', gap: '12px' }}>
-                            <button className="btn btn-secondary" onClick={() => setStep(2)}>
-                                Back
-                            </button>
-                            <button
-                                className="btn btn-primary"
-                                onClick={handleSetEmails}
-                                disabled={!subject || !body || saving}
-                            >
-                                {saving ? 'Saving...' : 'Preview & Launch'}
-                            </button>
-                        </div>
+                        {!generatingCopy && (
+                            <>
+                                <div style={{
+                                    padding: '12px',
+                                    background: 'var(--bg-secondary)',
+                                    borderRadius: '6px',
+                                    marginBottom: '20px',
+                                    fontSize: '12px',
+                                    color: 'var(--text-secondary)',
+                                    borderLeft: '3px solid var(--accent-primary)',
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                }}>
+                                    <span>💡 This email was generated by AI using your campaign context. Feel free to edit it to match your style.</span>
+                                    <button
+                                        onClick={handleRegenerateDraft}
+                                        disabled={generatingCopy}
+                                        style={{
+                                            background: 'none',
+                                            border: 'none',
+                                            color: 'var(--accent-primary)',
+                                            cursor: 'pointer',
+                                            fontSize: '12px',
+                                            whiteSpace: 'nowrap',
+                                        }}
+                                    >
+                                        🔄 Regenerate
+                                    </button>
+                                </div>
+
+                                <div style={{ marginBottom: '20px' }}>
+                                    <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)' }}>
+                                        Subject Line
+                                    </label>
+                                    <input
+                                        type="text"
+                                        className="input"
+                                        value={subject}
+                                        onChange={(e) => setSubject(e.target.value)}
+                                        placeholder="Quick question, {{first_name}}"
+                                    />
+                                </div>
+
+                                <div style={{ marginBottom: '20px' }}>
+                                    <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)' }}>
+                                        Email Body
+                                    </label>
+                                    <textarea
+                                        className="input"
+                                        value={body}
+                                        onChange={(e) => setBody(e.target.value)}
+                                        placeholder="Hi {{first_name}},&#10;&#10;I noticed {{company}} is..."
+                                        rows={8}
+                                        style={{ resize: 'vertical' }}
+                                    />
+                                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                                        Use {'{{first_name}}'} and {'{{company}}'} for personalization
+                                    </div>
+                                </div>
+
+                                {/* Draft warnings */}
+                                {draftResponse?.risky_phrases_found?.length > 0 && (
+                                    <div style={{ marginBottom: '16px', padding: '12px', borderRadius: '6px', background: 'var(--bg-warning)' }}>
+                                        <div style={{ fontWeight: 600, color: 'var(--text-warning)' }}>⚠️ Potential risky phrases detected</div>
+                                        <ul style={{ marginTop: '8px', marginBottom: '8px' }}>
+                                            {draftResponse.risky_phrases_found.map((p: string, i: number) => (
+                                                <li key={i} style={{ color: 'var(--text-secondary)' }}>{p}</li>
+                                            ))}
+                                        </ul>
+                                        <button className="btn btn-outline btn-sm" onClick={async () => {
+                                            if (!token || !campaignId) return;
+                                            setLintLoading(true);
+                                            try {
+                                                const res = await campaignsAI.lintEmail(token, campaignId, subject, body, followupSubject, followupBody);
+                                                setLintResult(res);
+                                            } catch (err: any) {
+                                                alert('Risk check failed: ' + (err?.message || err));
+                                            }
+                                            setLintLoading(false);
+                                        }} disabled={lintLoading}>
+                                            {lintLoading ? 'Checking...' : '🔍 Full Risk Check (AI)'}
+                                        </button>
+                                    </div>
+                                )}
+
+                                {lintResult && (
+                                    <div style={{ marginBottom: '16px', padding: '12px', borderRadius: '6px', background: lintResult.verdict === 'SAFE' ? 'var(--bg-success)' : 'var(--bg-danger)' }}>
+                                        <div style={{ fontWeight: 600 }}>{lintResult.verdict === 'SAFE' ? '✅ Email is SAFE' : '⚠️ Email is RISKY'} <span style={{ marginLeft: 8, color: 'var(--text-muted)' }}>(Risk score: {lintResult.risk_score}/100)</span></div>
+                                        {lintResult.issues?.length > 0 && (
+                                            <ul style={{ marginTop: 8 }}>
+                                                {lintResult.issues.map((issue: any, idx: number) => (
+                                                    <li key={idx} style={{ marginBottom: 6 }}>
+                                                        <strong>{issue.category}</strong> ({issue.severity}): {issue.explanation}
+                                                        {issue.suggestion && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>💡 {issue.suggestion}</div>}
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        )}
+                                    </div>
+                                )}
+
+                                <div style={{ marginBottom: '20px' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={followupEnabled}
+                                            onChange={(e) => setFollowupEnabled(e.target.checked)}
+                                        />
+                                        <span>Enable follow-up emails</span>
+                                    </label>
+                                    {followupEnabled && (
+                                        <div style={{ marginTop: '12px', paddingLeft: '24px' }}>
+                                            <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)' }}>
+                                                Days between follow-ups
+                                            </label>
+                                            <select
+                                                className="input"
+                                                value={followupDays}
+                                                onChange={(e) => setFollowupDays(Number(e.target.value))}
+                                                style={{ width: 'auto' }}
+                                            >
+                                                {[2, 3, 4, 5, 7].map(d => (
+                                                    <option key={d} value={d}>{d} days</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div style={{ display: 'flex', gap: '12px' }}>
+                                    <button className="btn btn-secondary" onClick={() => setStep(3)}>
+                                        Back
+                                    </button>
+                                    <button
+                                        className="btn btn-primary"
+                                        onClick={handleSetEmails}
+                                        disabled={!subject || !body || saving}
+                                    >
+                                        {saving ? 'Saving...' : 'Preview & Launch'}
+                                    </button>
+                                </div>
+                            </>
+                        )}
                     </div>
                 )}
 
-                {/* Step 4: Launch */}
-                {step === 4 && preview && (
+                {/* Step 5: Launch */}
+                {step === 5 && preview && (
                     <div className="card">
                         <h2 style={{ fontSize: '18px', marginBottom: '24px' }}>Ready to Launch</h2>
 
@@ -585,7 +888,7 @@ export default function NewCampaignPage() {
                         </div>
 
                         <div style={{ display: 'flex', gap: '12px' }}>
-                            <button className="btn btn-secondary" onClick={() => setStep(3)}>
+                            <button className="btn btn-secondary" onClick={() => setStep(4)}>
                                 Back
                             </button>
                             <button

@@ -49,6 +49,10 @@ services:
       - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
       - CALENDLY_WEBHOOK_SECRET=${CALENDLY_WEBHOOK_SECRET:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL_DRAFT=${OPENAI_MODEL_DRAFT:-gpt-4o-mini}
+      - OPENAI_MODEL_LINT=${OPENAI_MODEL_LINT:-gpt-4o-mini}
+      - OPENAI_MODEL_CLASSIFY=${OPENAI_MODEL_CLASSIFY:-gpt-4o-mini}
     ports:
       - "8000:8000"
     depends_on:
@@ -73,6 +77,10 @@ services:
       - OAUTH_ENCRYPTION_KEY=${OAUTH_ENCRYPTION_KEY}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL_DRAFT=${OPENAI_MODEL_DRAFT:-gpt-4o-mini}
+      - OPENAI_MODEL_LINT=${OPENAI_MODEL_LINT:-gpt-4o-mini}
+      - OPENAI_MODEL_CLASSIFY=${OPENAI_MODEL_CLASSIFY:-gpt-4o-mini}
     depends_on:
       db:
         condition: service_healthy

@@ -63,10 +63,28 @@ async def create_campaign(
         mailbox_id=campaign_data.mailbox_id,
         name=campaign_data.name,
         status=CampaignStatus.DRAFT,
-        safety_level=workspace.safety_preference
+        safety_level=workspace.safety_preference,
+        customer_info=campaign_data.customer_info if getattr(campaign_data, 'customer_info', None) else None,
     )
     db.add(campaign)
     db.commit()
+
+    # Backwards-compat: also persist as an Event for existing tooling (optional)
+    if getattr(campaign_data, "customer_info", None):
+        try:
+            from app.models import Event
+            evt = Event(
+                entity_type="campaign",
+                entity_id=campaign.id,
+                action="CAMPAIGN_CUSTOMER_INFO",
+                details=campaign_data.customer_info,
+                explanation="Per-campaign customer info provided at creation",
+            )
+            db.add(evt)
+            db.commit()
+        except Exception:
+            # Non-fatal: if Event insert fails, continue — primary storage is campaign.customer_info
+            db.rollback()
     db.refresh(campaign)
     
     # Add leads to campaign

@@ -67,6 +67,8 @@ class WorkspaceResponse(BaseModel):
     offer_type: Optional[str]
     safety_preference: SafetyLevel
     has_leads: bool
+    warmup_enabled: bool = False
+    warmup_start_date: Optional[datetime] = None
     created_at: datetime
 
     class Config:
@@ -106,6 +108,8 @@ class DomainResponse(BaseModel):
     spf_record: Optional[str]
     dmarc_valid: Optional[bool]
     dmarc_record: Optional[str]
+    warmup_day: int
+    warmup_completed: bool
     last_checked_at: Optional[datetime]
 
     class Config:
@@ -176,6 +180,8 @@ class CampaignCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     mailbox_id: int
     lead_ids: List[int]
+    # Optional per-campaign customer info to override workspace wizard answers
+    customer_info: Optional[dict] = None
 
 
 class CampaignEmailContent(BaseModel):

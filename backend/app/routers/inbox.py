@@ -339,14 +339,29 @@ async def send_reply(
             to_email=campaign_lead.lead.email,
             subject=subject,
             body=request.body,
-            reply_to_thread_id=reply.gmail_thread_id
+            reply_to_thread_id=reply.gmail_thread_id,
+            reply_to_message_id=reply.gmail_message_id  # <--- Fix: Pass API ID for header fetching
         )
         
+        # Calculate unique negative step number for manual replies
+        # Find the lowest existing negative step number for this lead
+        from sqlalchemy import func
+        min_step = db.query(func.min(Message.step_number)).filter(
+            Message.campaign_lead_id == campaign_lead.id,
+            Message.step_number < 0
+        ).scalar()
+        
+        # Start at -2, then go to -3, -4, etc.
+        if min_step is None:
+            next_step = -2
+        else:
+            next_step = min_step - 1
+            
         # Record the manual outbound message
         new_msg = Message(
             campaign_lead_id=campaign_lead.id,
             direction=MessageDirection.OUTBOUND,
-            step_number=-2,  # Manual follow-up
+            step_number=next_step,  # Dynamic negative step number
             gmail_message_id=gmail_msg_id,
             gmail_thread_id=gmail_thread_id,
             subject=subject,
