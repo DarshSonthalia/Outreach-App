@@ -28,6 +28,8 @@ from app.schemas.schemas import (
     ClassifyRequest,
     SendReplyRequest,
     CalendlyWebhookPayload,
+    CampaignScheduleItem,
+    CampaignScheduleResponse,
 )
 
 __all__ = [
@@ -57,4 +59,6 @@ __all__ = [
     "ClassifyRequest",
     "SendReplyRequest",
     "CalendlyWebhookPayload",
+    "CampaignScheduleItem",
+    "CampaignScheduleResponse",
 ]

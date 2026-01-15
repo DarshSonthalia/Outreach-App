@@ -16,6 +16,9 @@ from app.enums import (
     SuppressionReason,
     SafetyLevel,
     MailboxStatus,
+    FollowupState,
+    CancelReason,
+    DraftStatus,
 )
 
 
@@ -191,6 +194,7 @@ class Campaign(Base):
     followup_subject = Column(String(500), nullable=True)
     followup_body = Column(Text, nullable=True)
     max_followups = Column(Integer, default=2)
+    followup_templates = Column(JSON, nullable=True) # [{"step": 1, "subject": "...", "body": "..."}]
     
     # Safety (read-only, enforced by system)
     safety_level = Column(SQLEnum(SafetyLevel), default=SafetyLevel.MEDIUM)
@@ -222,6 +226,15 @@ class CampaignLead(Base):
     # Scheduling
     next_action_at = Column(DateTime, nullable=True, index=True)
     followup_count = Column(Integer, default=0)
+
+    # Follow-up System (New)
+    followup_state = Column(SQLEnum(FollowupState), default=FollowupState.SCHEDULED, nullable=False)
+    cancelled_at = Column(DateTime, nullable=True)
+    cancel_reason = Column(SQLEnum(CancelReason), nullable=True)
+    cancel_detail = Column(Text, nullable=True)
+    current_step = Column(Integer, default=0, nullable=False)
+    next_scheduled_at = Column(DateTime, nullable=True, index=True)
+    schedule_json = Column(JSON, nullable=True)
     
     # Fix D3: Retry safety
     retry_count = Column(Integer, default=0)
@@ -248,7 +261,7 @@ class Message(Base):
     
     # Fix D2: Unique constraint for idempotency
     __table_args__ = (
-        UniqueConstraint('campaign_lead_id', 'step_number', 'direction', name='uq_message_idempotency'),
+        UniqueConstraint('campaign_lead_id', 'step_number', 'direction', 'is_draft', name='uq_message_idempotency'),
     )
     
     id = Column(Integer, primary_key=True, index=True)
@@ -266,6 +279,15 @@ class Message(Base):
     # Content
     subject = Column(String(500), nullable=True)
     body = Column(Text, nullable=True)
+
+    # Sending & Cancellation
+    planned_send_at = Column(DateTime, nullable=True)
+    cancelled = Column(Boolean, default=False, nullable=False)
+    cancel_reason = Column(String(255), nullable=True)
+    
+    # Drafts
+    is_draft = Column(Boolean, default=False, nullable=False)
+    draft_status = Column(SQLEnum(DraftStatus), nullable=True)
     
     # For inbound messages
     classification = Column(SQLEnum(ReplyClassification), nullable=True)
@@ -368,3 +390,30 @@ class BookingEvent(Base):
     # Tracking
     processed_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ReplyDraft(Base):
+    """AI Generated Reply Drafts."""
+    __tablename__ = "reply_drafts"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False)
+    mailbox_id = Column(Integer, ForeignKey("mailboxes.id"), nullable=False)
+    
+    gmail_thread_id = Column(String(255), nullable=False, index=True)
+    gmail_message_id = Column(String(255), nullable=True)  # The message being replied to
+    
+    subject = Column(Text, nullable=True)
+    body = Column(Text, nullable=True)
+    
+    model = Column(String(100), nullable=False)
+    prompt_version = Column(String(100), nullable=False)
+    
+    status = Column(SQLEnum(DraftStatus), default=DraftStatus.GENERATED, nullable=False)
+    
+    risk_flags = Column(JSON, nullable=True)
+    classification = Column(String(100), nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+

@@ -9,6 +9,9 @@ from app.enums import (
     SuppressionReason,
     SafetyLevel,
     MailboxStatus,
+    FollowupState,
+    CancelReason,
+    DraftStatus,
 )
 from app.models.models import (
     User,
@@ -23,6 +26,7 @@ from app.models.models import (
     SuppressionEntry,
     RiskSnapshot,
     BookingEvent,
+    ReplyDraft,
 )
 
 __all__ = [
@@ -45,5 +49,9 @@ __all__ = [
     "SuppressionReason",
     "SafetyLevel",
     "MailboxStatus",
+    "FollowupState",
+    "CancelReason",
+    "DraftStatus",
+    "ReplyDraft",
 ]
 

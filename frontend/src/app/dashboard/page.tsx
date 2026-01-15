@@ -125,16 +125,16 @@ export default function DashboardPage() {
             alert('Session expired. Please reload the page.');
             return;
         }
-        
+
         try {
             setRelinkingMailboxId(mailboxId);
             console.log('DEBUG: Getting OAuth URL for workspace:', workspaceId);
             const resp = await mailboxes.getOAuthUrl(token, workspaceId);
-            
+
             if (!resp.auth_url) {
                 throw new Error('Failed to get authorization URL');
             }
-            
+
             console.log('DEBUG: Redirecting to Google for re-authentication');
             window.location.href = resp.auth_url;
         } catch (err: any) {
@@ -152,11 +152,11 @@ export default function DashboardPage() {
             setDisconnectingMailboxId(mailboxId);
             console.log('DEBUG: Disconnecting mailbox:', mailboxId);
             await mailboxes.disconnect(token!, mailboxId);
-            
+
             // Refresh mailbox list
             const updatedMailboxes = await mailboxes.list(token!, workspaceId!);
             setConnectedMailboxes(updatedMailboxes);
-            
+
             console.log('DEBUG: Mailbox disconnected successfully');
         } catch (err: any) {
             alert(`Failed to disconnect mailbox: ${err.message}`);
@@ -170,15 +170,15 @@ export default function DashboardPage() {
             alert('Session expired. Please reload the page.');
             return;
         }
-        
+
         try {
             console.log('DEBUG: Getting OAuth URL for new mailbox, workspace:', workspaceId);
             const resp = await mailboxes.getOAuthUrl(token, workspaceId);
-            
+
             if (!resp.auth_url) {
                 throw new Error('Failed to get authorization URL');
             }
-            
+
             console.log('DEBUG: Redirecting to Google to add new mailbox');
             window.location.href = resp.auth_url;
         } catch (err: any) {
@@ -225,9 +225,9 @@ export default function DashboardPage() {
         );
     }
 
-    const totalSentToday = activeCampaigns.reduce((sum, c) => sum + c.emails_sent_today, 0);
-    const totalReplies = activeCampaigns.reduce((sum, c) => sum + c.replies_count, 0);
-    const totalMeetings = activeCampaigns.reduce((sum, c) => sum + c.meetings_booked, 0);
+    const totalSentToday = activeCampaigns.reduce((sum: number, c: CampaignDashboard) => sum + c.emails_sent_today, 0);
+    const totalReplies = activeCampaigns.reduce((sum: number, c: CampaignDashboard) => sum + (c.replies_count || 0), 0);
+    const totalMeetings = activeCampaigns.reduce((sum: number, c: CampaignDashboard) => sum + (c.meetings_booked || 0), 0);
 
     return (
         <div style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
@@ -306,7 +306,7 @@ export default function DashboardPage() {
                         <div className="stat-label">Meetings Booked</div>
                     </div>
                     <div className="stat-card">
-                        <div className="stat-value">{allCampaigns.filter(c => c.status && c.status.toUpperCase() === 'RUNNING').length}</div>
+                        <div className="stat-value">{allCampaigns.filter((c: Campaign) => c.status && c.status.toUpperCase() === 'RUNNING').length}</div>
                         <div className="stat-label">Active Campaigns</div>
                     </div>
                 </div>
@@ -336,7 +336,7 @@ export default function DashboardPage() {
                         </div>
                     ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                            {activeCampaigns.map((campaign) => (
+                            {activeCampaigns.map((campaign: CampaignDashboard) => (
                                 <div key={campaign.campaign_id} className="card">
                                     <div style={{
                                         display: 'flex',
@@ -385,6 +385,22 @@ export default function DashboardPage() {
                                             >
                                                 Terminate
                                             </button>
+                                            <Link href={`/campaigns/${campaign.campaign_id}/schedule`}>
+                                                <button
+                                                    style={{
+                                                        background: 'rgba(33, 150, 243, 0.1)',
+                                                        border: '1px solid rgba(33, 150, 243, 0.2)',
+                                                        color: '#2196f3',
+                                                        padding: '6px 12px',
+                                                        borderRadius: '6px',
+                                                        fontSize: '12px',
+                                                        fontWeight: '600',
+                                                        cursor: 'pointer'
+                                                    }}
+                                                >
+                                                    View Schedule
+                                                </button>
+                                            </Link>
                                         </div>
                                     </div>
 
@@ -449,7 +465,7 @@ export default function DashboardPage() {
                         </div>
                     ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                            {connectedMailboxes.map((mailbox) => (
+                            {connectedMailboxes.map((mailbox: any) => (
                                 <div key={mailbox.id} className="card" style={{ padding: '16px' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                                         <div style={{

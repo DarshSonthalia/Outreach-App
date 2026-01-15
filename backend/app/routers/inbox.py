@@ -380,84 +380,6 @@ async def send_reply(
         )
 
 
-@router.get("/debug/replies")
-async def debug_replies(
-    workspace_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Debug endpoint to check reply data in database.
-    Returns detailed information about messages and relationships.
-    """
-    # Verify workspace
-    workspace = db.query(Workspace).filter(
-        Workspace.id == workspace_id,
-        Workspace.user_id == current_user.id
-    ).first()
-    
-    if not workspace:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Workspace not found"
-        )
-    
-    # Count all messages
-    total_messages = db.query(Message).count()
-    inbound_messages = db.query(Message).filter(
-        Message.direction == MessageDirection.INBOUND
-    ).count()
-    outbound_messages = db.query(Message).filter(
-        Message.direction == MessageDirection.OUTBOUND
-    ).count()
-    
-    # Count messages for this workspace
-    workspace_messages = db.query(Message).join(
-        CampaignLead, Message.campaign_lead_id == CampaignLead.id
-    ).join(
-        Campaign, CampaignLead.campaign_id == Campaign.id
-    ).filter(
-        Campaign.workspace_id == workspace_id
-    ).count()
-    
-    workspace_inbound = db.query(Message).join(
-        CampaignLead, Message.campaign_lead_id == CampaignLead.id
-    ).join(
-        Campaign, CampaignLead.campaign_id == Campaign.id
-    ).filter(
-        Campaign.workspace_id == workspace_id,
-        Message.direction == MessageDirection.INBOUND
-    ).count()
-    
-    # Get sample messages
-    sample_messages = db.query(Message).join(
-        CampaignLead, Message.campaign_lead_id == CampaignLead.id
-    ).join(
-        Campaign, CampaignLead.campaign_id == Campaign.id
-    ).filter(
-        Campaign.workspace_id == workspace_id,
-        Message.direction == MessageDirection.INBOUND
-    ).limit(5).all()
-    
-    sample_data = []
-    for msg in sample_messages:
-        try:
-            sample_data.append({
-                "message_id": msg.id,
-                "campaign_lead_id": msg.campaign_lead_id,
-                "subject": msg.subject,
-                "received_at": str(msg.received_at) if msg.received_at else None,
-                "classification": msg.classification.value if msg.classification else None,
-                "has_campaign_lead": msg.campaign_lead is not None,
-                "has_lead": msg.campaign_lead.lead is not None if msg.campaign_lead else False,
-                "has_campaign": msg.campaign_lead.campaign is not None if msg.campaign_lead else False,
-            })
-        except Exception as e:
-            sample_data.append({
-                "message_id": msg.id,
-                "error": str(e)
-            })
-    
     return {
         "workspace_id": workspace_id,
         "total_messages_in_db": total_messages,
@@ -471,3 +393,205 @@ async def debug_replies(
             Campaign.workspace_id == workspace_id
         ).count(),
     }
+
+
+# ==========================================
+# AI DRAFT ENDPOINTS
+# ==========================================
+
+from app.services.ai_service import AIService
+from app.models import ReplyDraft, DraftStatus
+
+@router.post("/threads/{gmail_thread_id}/ai-draft")
+async def generate_ai_draft(
+    gmail_thread_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate an AI draft reply for a specific thread.
+    """
+    # 1. Verification
+    # Find the latest inbound message for this thread to reply to
+    latest_msg = db.query(Message).join(CampaignLead).join(Campaign).join(Workspace).filter(
+        Message.gmail_thread_id == gmail_thread_id,
+        Workspace.user_id == current_user.id, # Ownership check
+        Message.direction == MessageDirection.INBOUND
+    ).order_by(Message.received_at.desc()).first()
+
+    if not latest_msg:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No inbound message found for this thread"
+        )
+
+    # 2. Context Gathering
+    campaign_lead = latest_msg.campaign_lead
+    campaign = campaign_lead.campaign
+    lead = campaign_lead.lead
+    
+    # Get conversation history (sorted old -> new)
+    history_msgs = db.query(Message).filter(
+        Message.gmail_thread_id == gmail_thread_id
+    ).order_by(Message.received_at, Message.sent_at).all()
+    
+    # Format history
+    history_text = ""
+    for msg in history_msgs:
+        sender = "Lead" if msg.direction == MessageDirection.INBOUND else "Me"
+        content = clean_message_body(msg.body) if msg.direction == MessageDirection.INBOUND else msg.body
+        history_text += f"{sender}: {content}\n\n"
+        
+    context = {
+        "lead_name": f"{lead.first_name} {lead.last_name}".strip(),
+        "lead_company": lead.company,
+        "lead_email": lead.email,
+        "campaign_context": f"Goal: {campaign.name}. Body sample: {campaign.body[:200]}...",
+        "conversation_history": history_text,
+        "last_reply": latest_msg.body
+    }
+    
+    # 3. Generate Draft via AI Service
+    try:
+        draft_json = AIService.generate_reply_draft(context)
+    except Exception as e:
+        logger.error(f"AI Generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+        
+    # 4. Save to DB (reply_drafts)
+    new_draft = ReplyDraft(
+        workspace_id=campaign.workspace_id,
+        mailbox_id=campaign.mailbox_id,
+        gmail_thread_id=gmail_thread_id,
+        gmail_message_id=latest_msg.gmail_message_id, # Replying to this msg
+        subject=draft_json.get("subject"),
+        body=draft_json.get("body"),
+        model="gpt-4o", # from config ideally
+        prompt_version="v1",
+        status=DraftStatus.GENERATED,
+        risk_flags=draft_json.get("risk_flags"),
+        classification=draft_json.get("classification")
+    )
+    db.add(new_draft)
+    db.commit()
+    db.refresh(new_draft)
+    
+    return new_draft
+
+
+from fastapi import Body
+
+@router.post("/drafts/{draft_id}/update")
+async def update_draft(
+    draft_id: int,
+    body: str = Body(..., embed=True), # Expects {"body": "..."}
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update a draft's content (human edit).
+    """
+    draft = db.query(ReplyDraft).filter(ReplyDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+        
+    # Verify ownership via workspace -> user
+    workspace = db.query(Workspace).filter(
+        Workspace.id == draft.workspace_id, 
+        Workspace.user_id == current_user.id
+    ).first()
+    
+    if not workspace:
+         raise HTTPException(status_code=403, detail="Not authorized")
+
+    draft.body = body
+    draft.status = DraftStatus.EDITED
+    db.commit()
+    db.refresh(draft)
+    return draft
+
+
+@router.post("/drafts/{draft_id}/send")
+async def send_draft(
+    draft_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Send a saved draft.
+    """
+    draft = db.query(ReplyDraft).filter(ReplyDraft.id == draft_id).first()
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    # Verify ownership
+    workspace = db.query(Workspace).filter(
+        Workspace.id == draft.workspace_id, 
+        Workspace.user_id == current_user.id
+    ).first()
+    
+    if not workspace:
+         raise HTTPException(status_code=403, detail="Not authorized")
+         
+    if draft.status == DraftStatus.SENT:
+        raise HTTPException(status_code=400, detail="Draft already sent")
+
+    # Get Mailbox & Service
+    mailbox = db.query(Mailbox).get(draft.mailbox_id)
+    service, mailbox = GmailService.get_gmail_client(mailbox, db)
+    
+    if not service:
+        raise HTTPException(status_code=401, detail="Mailbox auth failed")
+        
+    # Send
+    # Fetch lead email to send to
+        try:
+            # Find original message to identify lead
+            original_msg = db.query(Message).filter(Message.gmail_message_id == draft.gmail_message_id).first()
+            if not original_msg:
+                # Fallback to thread
+                original_msg = db.query(Message).filter(Message.gmail_thread_id == draft.gmail_thread_id).first()
+            
+            if not original_msg or not original_msg.campaign_lead:
+                raise ValueError("Could not find lead associated with this draft")
+                
+            lead_email = original_msg.campaign_lead.lead.email
+            campaign_lead = original_msg.campaign_lead
+            
+            credentials = GmailService.get_credentials_from_encrypted(
+                 mailbox.access_token_encrypted,
+                 mailbox.refresh_token_encrypted,
+                 mailbox.token_expiry
+            )
+            
+            gmail_msg_id, gmail_thread_id = GmailService.send_email(
+                credentials=credentials,
+                to_email=lead_email,
+                subject=draft.subject,
+                body=draft.body,
+                reply_to_thread_id=draft.gmail_thread_id,
+                reply_to_message_id=draft.gmail_message_id
+            )
+            
+            # Record outbound
+            new_msg = Message(
+                 campaign_lead_id=campaign_lead.id,
+                 direction=MessageDirection.OUTBOUND,
+                 step_number=-99, # Manual/Draft reply
+                 gmail_message_id=gmail_msg_id,
+                 gmail_thread_id=gmail_thread_id,
+                 subject=draft.subject,
+                 body=draft.body,
+                 sent_at=datetime.utcnow(),
+                 is_draft=False
+            )
+            db.add(new_msg)
+            
+            draft.status = DraftStatus.SENT
+            db.commit()
+            
+            return {"status": "success", "message_id": gmail_msg_id}
+            
+        except Exception as e:
+            logger.error(f"Send draft failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))

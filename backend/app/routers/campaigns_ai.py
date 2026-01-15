@@ -3,7 +3,7 @@ Campaign AI endpoints - draft generation and risk linting.
 """
 import logging
 import os
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -38,8 +38,7 @@ class DraftRequest(BaseModel):
 class DraftResponse(BaseModel):
     subject: str
     body: str
-    followup_subject: Optional[str] = None
-    followup_body: Optional[str] = None
+    followup_templates: Optional[List[dict]] = None
     personalization_vars_used: list[str]
     risky_phrases_found: list[str]
 
@@ -200,8 +199,7 @@ OUTPUT REQUIREMENTS:
         return DraftResponse(
             subject=draft.get("subject", ""),
             body=draft.get("body", ""),
-            followup_subject=draft.get("followup_subject"),
-            followup_body=draft.get("followup_body"),
+            followup_templates=draft.get("followup_templates"),
             personalization_vars_used=draft.get("personalization_vars_used", []),
             risky_phrases_found=draft.get("risky_phrases_found", []),
         )
@@ -226,8 +224,7 @@ OUTPUT REQUIREMENTS:
             return DraftResponse(
                 subject=fallback.get("subject", ""),
                 body=fallback.get("body", ""),
-                followup_subject=fallback.get("followup_subject"),
-                followup_body=fallback.get("followup_body"),
+                followup_templates=fallback.get("followup_templates"),
                 personalization_vars_used=fallback.get("personalization_vars_used", []),
                 risky_phrases_found=fallback.get("risky_phrases_found", []),
             )

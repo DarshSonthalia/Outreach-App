@@ -20,6 +20,8 @@ from app.models import (
 from app.services.gmail_service import GmailService
 from app.services.classification_service import ClassificationService
 from app.services.safety_service import SafetyService
+from app.services.followup_service import FollowupService
+from app.enums import FollowupState, CancelReason
 
 logger = logging.getLogger(__name__)
 
@@ -194,16 +196,31 @@ def process_incoming_message(db, mailbox: Mailbox, msg_data: dict):
         subject=subject,
         body=body,
         classification=classification,
-        received_at=datetime.utcnow()
+        received_at=datetime.utcnow(),
+        is_draft=False  # Inbound is never a draft
     )
     db.add(message)
+    db.flush() # Persist to get ID
     
-    # CRITICAL: Stop all future sends for this lead
-    campaign_lead.status = CampaignLeadStatus.REPLIED
-    campaign_lead.replied_at = datetime.utcnow()
-    campaign_lead.next_action_at = None  # Cancel any scheduled sends
+    # Handle Bounce logic
+    if is_bounce:
+        FollowupService.cancel_followups(
+            db, 
+            campaign_lead.id, 
+            CancelReason.BOUNCE, 
+            f"Heuristic bounce detected ({bounce_signal_count} signals)"
+        )
+    else:
+        # Apply Inbound Signal (Auto-cancel if needed)
+        # Check for OOO? existing classifier might return 'OUT_OF_OFFICE' if implemented?
+        # Prompt: "Determine out-of-office (if supported)"
+        # ClassificationService currently supports: UNSUBSCRIBE, NEGATIVE, NEUTRAL, BOOKING_INTENT, OUT_OF_OFFICE (if added).
+        # We assume ClassificationService returns valid enum.
+        
+        is_ooo = (classification == ReplyClassification.OUT_OF_OFFICE)
+        FollowupService.apply_inbound_signal(db, message, is_out_of_office=is_ooo)
     
-    # Handle based on classification
+    # Additional Actions (Suppression)
     if classification == ReplyClassification.UNSUBSCRIBE:
         # Add to permanent suppression list
         SafetyService.add_to_suppression(
@@ -214,25 +231,10 @@ def process_incoming_message(db, mailbox: Mailbox, msg_data: dict):
             f"Unsubscribed via reply to campaign {campaign.name}"
         )
         campaign_lead.status = CampaignLeadStatus.UNSUBSCRIBED
-        
         logger.info(f"Lead {lead.email} unsubscribed and suppressed")
-    
-    # Log the reply event
-    event = Event(
-        entity_type="campaign_lead",
-        entity_id=campaign_lead.id,
-        action="reply_received",
-        details={
-            "from": sender_email,
-            "subject": subject,
-            "classification": classification.value if classification else None,
-            "is_bounce": is_bounce
-        },
-        explanation=f"Reply received from {lead.email}. Classification: {classification.value if classification else 'unknown'}. All future sends stopped."
-    )
-    db.add(event)
-    
-    # Commit the message and updates
-    db.flush()  # Ensure message is saved before continuing
+    else:
+        # Just mark status as REPLIED (legacy status field update)
+        campaign_lead.status = CampaignLeadStatus.REPLIED
+        campaign_lead.replied_at = datetime.utcnow()
     
     logger.info(f"Reply processed for {lead.email}, classification: {classification}")

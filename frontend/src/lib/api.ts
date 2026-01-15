@@ -167,10 +167,25 @@ export const campaigns = {
     get: (token: string, id: number) =>
         apiRequest<any>(`/api/campaigns/${id}`, { token }),
 
-    setEmails: (token: string, id: number, data: any) =>
-        apiRequest<any>(`/api/campaigns/${id}/emails`, {
+    setEmails: (token: string, campaignId: number, data: {
+        subject: string;
+        body: string;
+        followup_enabled: boolean;
+        followup_delay_days: number;
+        followup_subject?: string;
+        followup_body?: string;
+        followup_templates?: any[];
+    }) =>
+        apiRequest<any>(`/api/campaigns/${campaignId}/emails`, {
             method: 'PUT',
             body: data,
+            token,
+        }),
+
+    updateFollowupTemplates: (token: string, campaignId: number, templates: any[]) =>
+        apiRequest<any>(`/api/campaigns/${campaignId}/followup-templates`, {
+            method: 'PATCH',
+            body: templates,
             token,
         }),
 
@@ -202,6 +217,15 @@ export const campaigns = {
         apiRequest<any>(`/api/campaigns/${id}`, {
             method: 'DELETE',
             token,
+        }),
+
+    getSchedule: (token: string, id: number) =>
+        apiRequest<any>(`/api/campaigns/${id}/schedule`, { token }),
+
+    cancelLeadFollowups: (token: string, leadId: number) =>
+        apiRequest<any>(`/api/campaigns/leads/${leadId}/cancel-followups`, {
+            method: 'POST',
+            token
         }),
 };
 
@@ -254,6 +278,36 @@ export const inbox = {
         apiRequest<any>(`/api/inbox/replies/${replyId}/classify`, {
             method: 'POST',
             body: { classification },
+            token,
+        }),
+
+    generateDraft: (token: string, threadId: string) =>
+        apiRequest<any>(`/api/inbox/threads/${threadId}/ai-draft`, {
+            method: 'POST',
+            body: {},
+            token,
+        }),
+
+    updateDraft: (token: string, draftId: number, body: string) =>
+        apiRequest<any>(`/api/inbox/drafts/${draftId}/update`, {
+            method: 'POST',
+            body: { body },
+            token,
+        }),
+
+    // Correction: I should update the router to Body, or use query param here. 
+    // Let's assume I will fix the router later or use query param. 
+    // Using query param for body is bad for long text. 
+    // I should have made a Pydantic model for UpdateDraftRequest. 
+    // I will use `?body=...` for now in the frontend call to match default FastAPI behavior for scalars.
+
+    // Actually, I'll update the router next step to be safe. 
+    // Let's assume standard POST body structure for cleanliness.
+
+    sendDraft: (token: string, draftId: number) =>
+        apiRequest<any>(`/api/inbox/drafts/${draftId}/send`, {
+            method: 'POST',
+            body: {},
             token,
         }),
 };

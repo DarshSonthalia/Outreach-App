@@ -10,11 +10,12 @@ from app.database import get_db
 from app.models import (
     User, Workspace, Mailbox, Lead, Campaign, CampaignLead,
     CampaignStatus, CampaignLeadStatus, Message, MessageDirection,
-    ReplyClassification
+    ReplyClassification, FollowupState, CancelReason
 )
 from app.schemas import (
     CampaignCreate, CampaignEmailContent, CampaignResponse,
-    CampaignDashboard, CampaignPreview
+    CampaignDashboard, CampaignPreview, CampaignScheduleItem, 
+    CampaignScheduleResponse
 )
 from app.utils.dependencies import get_current_user
 from app.services.safety_service import SafetyService
@@ -140,10 +141,39 @@ async def set_email_content(
     campaign.followup_subject = content.followup_subject
     campaign.followup_body = content.followup_body
     campaign.max_followups = content.max_followups
+    if content.followup_templates:
+        campaign.followup_templates = content.followup_templates
     
     db.commit()
     db.refresh(campaign)
     
+    return campaign
+
+
+@router.patch("/{campaign_id}/followup-templates", response_model=CampaignResponse)
+async def update_followup_templates(
+    campaign_id: int,
+    templates: List[dict],
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update the master follow-up templates for a campaign.
+    """
+    campaign = db.query(Campaign).join(Workspace).filter(
+        Campaign.id == campaign_id,
+        Workspace.user_id == current_user.id
+    ).first()
+    
+    if not campaign:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Campaign not found"
+        )
+    
+    campaign.followup_templates = templates
+    db.commit()
+    db.refresh(campaign)
     return campaign
 
 
@@ -292,7 +322,57 @@ async def launch_campaign(
     for i, cl in enumerate(campaign_leads):
         # Stagger sends by 1-2 minutes to appear more natural
         delay_minutes = i * 2
-        cl.next_action_at = now + timedelta(minutes=delay_minutes)
+        start_time = now + timedelta(minutes=delay_minutes)
+        
+        # Build the full schedule plan
+        schedule_plan = []
+        
+        # Step 0 (Initial Email)
+        schedule_plan.append({
+            "step": 0,
+            "planned_at": start_time.isoformat(),
+            "subject": campaign.subject,
+            "body_preview": (campaign.body[:100] + "...") if campaign.body else "No body",
+            "status": "PENDING"
+        })
+        
+        # Follow-ups (Steps 1..Max)
+        # Note: This uses the static templates. If we go dynamic later, this plan will update.
+        current_time = start_time
+        for step in range(1, (campaign.max_followups or 0) + 1):
+            # Add delay (days)
+            delay_days = campaign.followup_delay_days or 3
+            current_time = current_time + timedelta(days=delay_days)
+            
+            # Try to find template
+            tmpl = None
+            if campaign.followup_templates:
+                for t in campaign.followup_templates:
+                    if t.get("step") == step:
+                        tmpl = t
+                        break
+            
+            subject = (tmpl.get("subject") if tmpl else None) or campaign.followup_subject or f"Follow-up {step}"
+            body_preview = "Follow-up"
+            if tmpl and tmpl.get("body"):
+                body_preview = (tmpl.get("body", "")[:100] + "...")
+            elif campaign.followup_body:
+                body_preview = (campaign.followup_body[:100] + "...")
+            
+            schedule_plan.append({
+                "step": step,
+                "planned_at": current_time.isoformat(),
+                "subject": subject,
+                "body_preview": body_preview,
+                "status": "PLANNED"
+            })
+            
+        cl.schedule_json = schedule_plan
+        cl.next_scheduled_at = start_time
+        cl.current_step = 0
+        cl.followup_state = FollowupState.SCHEDULED
+        # Deprecated but kept for compat
+        cl.next_action_at = start_time
     
     campaign.status = CampaignStatus.RUNNING
     campaign.launched_at = now
@@ -479,6 +559,133 @@ async def get_campaign_dashboard(
     return result
 
 
+@router.get("/{campaign_id}/schedule", response_model=CampaignScheduleResponse)
+async def get_campaign_schedule(
+    campaign_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the follow-up schedule for all leads in a campaign.
+    """
+    campaign = db.query(Campaign).join(Workspace).filter(
+        Campaign.id == campaign_id,
+        Workspace.user_id == current_user.id
+    ).first()
+    
+    if not campaign:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Campaign not found"
+        )
+    
+    # Get all leads with their followup status
+    campaign_leads = db.query(CampaignLead).filter(
+        CampaignLead.campaign_id == campaign_id
+    ).all()
+    
+    items = []
+    for cl in campaign_leads:
+        lead = cl.lead
+        
+        # Backfill schedule if missing
+        schedule = cl.schedule_json
+        if not schedule and cl.followup_state != FollowupState.COMPLETED:
+            # Generate a virtual schedule for the UI
+            schedule = []
+            
+            # Step 0 (Initial)
+            step_0_status = "SENT" if cl.current_step > 0 else "PENDING"
+            schedule.append({
+                "step": 0,
+                "planned_at": None, # Past or irrelevant
+                "subject": campaign.subject,
+                "body_preview": (campaign.body[:100] + "...") if campaign.body else "",
+                "status": step_0_status
+            })
+            
+            # Follow-ups (Step 1 to max_followups)
+            for i in range(1, campaign.max_followups + 1):
+                status = "PLANNED"
+                if cl.current_step > i:
+                    status = "SENT"
+                elif cl.followup_state == FollowupState.CANCELLED:
+                    status = "CANCELLED"
+                
+                # Try to get template if exists
+                body_preview = "Follow-up email"
+                if campaign.followup_templates and len(campaign.followup_templates) >= i:
+                    tmpl = campaign.followup_templates[i-1]
+                    body_preview = (tmpl.get("body", "")[:100] + "...") if tmpl.get("body") else "Follow-up email"
+                
+                # Estimate planned time based on current step and delay
+                planned_at = None
+                if status == "PLANNED" and i == cl.current_step:
+                    planned_at = cl.next_scheduled_at.isoformat() if cl.next_scheduled_at else None
+                
+                schedule.append({
+                    "step": i,
+                    "planned_at": planned_at,
+                    "subject": f"Re: {campaign.subject}",
+                    "body_preview": body_preview,
+                    "status": status
+                })
+
+        items.append(CampaignScheduleItem(
+            lead_email=lead.email,
+            lead_name=f"{lead.first_name or ''} {lead.last_name or ''}".strip(),
+            followup_state=cl.followup_state,
+            current_step=cl.current_step,
+            next_scheduled_at=cl.next_scheduled_at,
+            cancelled_at=cl.cancelled_at,
+            cancel_reason=cl.cancel_reason,
+            schedule_json=schedule
+        ))
+        
+    return CampaignScheduleResponse(
+        campaign_name=campaign.name,
+        campaign_id=campaign.id,
+        followup_templates=campaign.followup_templates,
+        items=items
+    )
+
+
+@router.post("/leads/{campaign_lead_id}/cancel-followups")
+async def cancel_lead_followups(
+    campaign_lead_id: int,
+    reason: str = "Manual cancellation",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually cancel follow-ups for a specific lead.
+    """
+    # Verify ownership
+    cl = db.query(CampaignLead).join(Campaign).join(Workspace).filter(
+        CampaignLead.id == campaign_lead_id,
+        Workspace.user_id == current_user.id
+    ).first()
+    
+    if not cl:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Campaign lead not found"
+        )
+        
+    from app.services.followup_service import FollowupService
+    from app.enums import CancelReason
+    
+    FollowupService.cancel_followups(
+        db,
+        campaign_lead_id=campaign_lead_id,
+        reason=CancelReason.MANUAL,
+        detail=reason,
+        source_event="api_manual_cancel"
+    )
+    
+    return {"status": "success", "message": "Follow-ups cancelled"}
+
+
 @router.post("/{campaign_id}/resume", response_model=CampaignResponse)
 async def resume_campaign_if_auth_fixed(
     campaign_id: int,
@@ -591,3 +798,38 @@ async def terminate_campaign(
     db.refresh(campaign)
     
     return campaign
+
+
+@router.post("/generate-followups")
+async def generate_campaign_followups(
+    initial_email_body: str,
+    campaign_name: str,
+    selling: str,
+    target_role: str,
+    value_prop: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate a 3-step AI follow-up sequence.
+    """
+    from app.services.ai_service import AIService
+    
+    context = {
+        "campaign_name": campaign_name,
+        "campaign_offer": {
+            "selling": selling,
+            "target_role": target_role,
+            "value_prop": value_prop
+        },
+        "initial_email_body": initial_email_body
+    }
+    
+    try:
+        sequence = AIService.generate_followup_sequence(context)
+        return {"sequence": sequence}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate follow-ups: {str(e)}"
+        )

@@ -134,13 +134,18 @@ DRAFT_SCHEMA = {
             "minLength": 20,
             "maxLength": 1200,
         },
-        "followup_subject": {
-            "type": "string",
-            "maxLength": 80,
-        },
-        "followup_body": {
-            "type": "string",
-            "maxLength": 1200,
+        "followup_templates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "step": {"type": "integer"},
+                    "subject": {"type": "string", "maxLength": 80},
+                    "body": {"type": "string", "maxLength": 1200}
+                },
+                "required": ["step", "subject", "body"]
+            }
         },
         "personalization_vars_used": {
             "type": "array",
@@ -153,7 +158,7 @@ DRAFT_SCHEMA = {
             "maxItems": 10,
         },
     },
-    "required": ["subject", "body", "personalization_vars_used", "risky_phrases_found", "followup_subject", "followup_body"],
+    "required": ["subject", "body", "followup_templates", "personalization_vars_used", "risky_phrases_found"],
 }
 
 DRAFT_INSTRUCTIONS = """ROLE:
@@ -186,16 +191,22 @@ HARD CONSTRAINTS (NON-NEGOTIABLE):
 - The ONLY acceptable CTA is a QUESTION.
 - The question must be easy to ignore (low friction).
 - The email must feel complete if they don't reply.
-
-5) LENGTH
-- Max 120 words total.
+ 
+5) LENGTH & SEQUENCE
+- Max 120 words total per email.
 - Short paragraphs.
 - No bullet points.
-
+- If include_followup=true, generate a SEQUENCE of 3 follow-ups (Steps 1, 2, 3).
+- Follow-up #1 (Step 1): Be brief, reference previous email.
+- Follow-up #2 (Step 2): New value point or light nudge.
+- Follow-up #3 (Step 3): Breakup/final nudge. Still polite and curious.
+ 
 GOAL:
 To start a conversation by showing light awareness of their context and asking how they currently think about the problem. Making replying feel optional.
-
-Output MUST follow the JSON schema strictly."""
+ 
+Output MUST follow the JSON schema strictly. 
+- If include_followup=true, populate followup_templates with exactly 3 items.
+- If include_followup=false, populate followup_templates with an empty array []."""
 
 
 def generate_campaign_draft(
@@ -240,11 +251,11 @@ WRITING SETTINGS:
 - Tone: {tone}
 - Length: {length}
 - Include follow-up: {include_followup}
-
+ 
 OUTPUT REQUIREMENTS:
-- Provide a subject and an email body.
-- If include_followup=true, also provide followup_subject and followup_body.
-- The email MUST adhere to the safety guidelines in the system prompt.
+- Provide a subject and an email body for Step 0.
+- If include_followup=true, provide a list of 3 follow-up templates in followup_templates (steps 1, 2, 3).
+- The emails MUST adhere to the safety guidelines in the system prompt.
 - Output must follow the JSON schema strictly."""
 
     return _call_responses_api(
@@ -253,7 +264,7 @@ OUTPUT REQUIREMENTS:
         input_text=input_text,
         json_schema=DRAFT_SCHEMA,
         temperature=0.3,
-        max_output_tokens=400,
+        max_output_tokens=1500,
     )
 
 
@@ -262,8 +273,23 @@ def _smoke_test_draft() -> Dict[str, Any]:
     return {
         "subject": "Quick question about your {{company}} data",
         "body": "Hi {{first_name}},\n\nI help teams using analytics tools get clearer product insights without extra engineering. Would you be open to a short chat to see if there's a fit?\n\nBest,\nThe Team",
-        "followup_subject": "Following up on my note",
-        "followup_body": "Hey {{first_name}},\n\nJust checking in — did you see my note about analytics?\n\nThanks,",
+        "followup_templates": [
+            {
+                "step": 1,
+                "subject": "Re: Quick question about your {{company}} data",
+                "body": "Hey {{first_name}},\n\nJust checking in — did you see my note about analytics?\n\nThanks,"
+            },
+            {
+                "step": 2,
+                "subject": "Re: Quick question about your {{company}} data",
+                "body": "Hi {{first_name}},\n\nI was just thinking about how manual data cleaning slows down product teams. Is that something you see as well?\n\nBest,"
+            },
+            {
+                "step": 3,
+                "subject": "Final check-in",
+                "body": "Hi {{first_name}},\n\nSince I haven't heard back, I'll assume this isn't a priority right now. Feel free to reach out if things change!\n\nBest,"
+            }
+        ],
         "personalization_vars_used": ["{{first_name}}", "{{company}}"],
         "risky_phrases_found": [],
     }

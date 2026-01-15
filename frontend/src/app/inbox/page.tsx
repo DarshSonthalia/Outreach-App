@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { auth, workspaces, inbox } from '@/lib/api';
@@ -43,6 +43,11 @@ export default function InboxPage() {
     const [sending, setSending] = useState(false);
     const [loading, setLoading] = useState(true);
     const [userName, setUserName] = useState('');
+
+    // AI Draft State
+    const [draftLoading, setDraftLoading] = useState(false);
+    const [activeDraft, setActiveDraft] = useState<any>(null); // To store current generated draft
+    const [isEditingDraft, setIsEditingDraft] = useState(false);
 
     useEffect(() => {
         const init = async () => {
@@ -114,7 +119,7 @@ export default function InboxPage() {
 
         try {
             await inbox.classify(token, replyId, classification);
-            setReplies(prev => prev.map(r =>
+            setReplies((prev: Reply[]) => prev.map((r: Reply) =>
                 r.id === replyId ? { ...r, classification } : r
             ));
             if (selectedReply?.id === replyId) {
@@ -135,9 +140,84 @@ export default function InboxPage() {
             const fullReply = await inbox.getReply(token, selectedReply.id);
             setThread(fullReply.thread || []);
             setReplyBody('');
+            setActiveDraft(null); // Clear draft after sending manual reply too?
         } catch (err: any) {
             console.error('Error sending reply:', err);
             alert(`Failed to send: ${err.message}`);
+        }
+        setSending(false);
+    };
+
+    const handleGenerateDraft = async () => {
+        if (!token || !selectedReply) return;
+        setDraftLoading(true);
+        try {
+            // Find gmail_thread_id from the selected reply or thread
+            // selectedReply only has superficial data, need thread_id. 
+            // Luckily `handleSelectReply` fetches fullReply which usually has it? 
+            // Wait, I need to look at `selectedReply` or `thread` structure. 
+            // `selectedReply` comes from list_replies which has no thread_id exposed in Reply model explicitly? 
+            // checking `get_reply` response, it returns `gmail_thread_id`.
+
+            // So I should grab it from the full details loaded:
+            // But `selectedReply` is the list item. I need to store the FULL reply details including thread_id.
+            // Let's re-fetch or assume `handleSelectReply` updates state... NO, it updates `thread` state. 
+
+            // I need the thread ID. I'll get it from the API call for single reply.
+            // Let's fetch it again to be safe or store it. 
+            // Actually `handleSelectReply` does `inbox.getReply`. I should store the result in a state variable `fullReplyData`.
+            // But for now, let's just re-fetch or assume I can get it.
+
+            const fullData = await inbox.getReply(token, selectedReply.id);
+            const threadId = fullData.gmail_thread_id;
+
+            const draft = await inbox.generateDraft(token, threadId);
+            setActiveDraft(draft);
+            setReplyBody(draft.body || ""); // Pre-fill textarea
+            setIsEditingDraft(true); // Enable edit mode concept
+
+        } catch (err: any) {
+            alert(`Failed to generate draft: ${err.message}`);
+        }
+        setDraftLoading(false);
+    };
+
+    const handleSaveDraft = async () => {
+        if (!token || !activeDraft) return;
+        try {
+            await inbox.updateDraft(token, activeDraft.id, replyBody);
+            alert("Draft saved!");
+        } catch (err: any) {
+            alert(`Failed to save: ${err.message}`);
+        }
+    };
+
+    const handleSendDraft = async () => {
+        if (!token || !activeDraft) return;
+        setSending(true);
+        try {
+            // If body changed, update first? Yes ideally.
+            if (replyBody !== activeDraft.body) {
+                await inbox.updateDraft(token, activeDraft.id, replyBody);
+            }
+
+            const result = await inbox.sendDraft(token, activeDraft.id);
+            console.log("Send Result:", result);
+
+            // Refresh
+            const fullReply = await inbox.getReply(token, selectedReply.id);
+            setThread(fullReply.thread || []);
+            setReplyBody('');
+            setActiveDraft(null);
+            setIsEditingDraft(false);
+
+            alert("Reply sent successfully!");
+
+        } catch (err: any) {
+            console.error('Error sending draft:', err);
+            // Check if it's a specific HTTP error object
+            const msg = err.response?.data?.detail || err.message || "Unknown error";
+            alert(`Failed to send draft: ${msg}`);
         }
         setSending(false);
     };
@@ -240,7 +320,7 @@ export default function InboxPage() {
                             No replies yet
                         </div>
                     ) : (
-                        replies.map((reply) => (
+                        replies.map((reply: Reply) => (
                             <div
                                 key={reply.id}
                                 onClick={() => handleSelectReply(reply)}
@@ -360,22 +440,39 @@ export default function InboxPage() {
                                 ))}
                             </div>
 
-                            {/* Reply Input */}
+                            {/* Reply Input Area */}
                             <div style={{
                                 padding: '24px',
                                 borderTop: '1px solid var(--border-color)',
                                 background: 'var(--bg-secondary)'
                             }}>
+                                {activeDraft && (
+                                    <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800 flex justify-between items-center">
+                                        <span>
+                                            ✨ AI Draft Generated ({activeDraft.model})
+                                            {activeDraft.risk_flags && activeDraft.risk_flags.length > 0 &&
+                                                <span className="ml-2 text-red-600 font-bold">⚠️ Risk Flags: {activeDraft.risk_flags.join(', ')}</span>
+                                            }
+                                        </span>
+                                        <button
+                                            onClick={() => { setActiveDraft(null); setReplyBody(''); }}
+                                            className="text-blue-600 hover:text-blue-800"
+                                        >
+                                            Discard
+                                        </button>
+                                    </div>
+                                )}
+
                                 <div style={{ position: 'relative' }}>
                                     <textarea
-                                        className="input"
+                                        className="input w-full"
                                         placeholder={`Reply to ${selectedReply.lead_email}...`}
                                         value={replyBody}
-                                        onChange={(e) => setReplyBody(e.target.value)}
+                                        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setReplyBody(e.target.value)}
                                         style={{
-                                            minHeight: '100px',
+                                            minHeight: '120px',
                                             padding: '16px',
-                                            paddingBottom: '50px',
+                                            paddingBottom: '60px',
                                             resize: 'vertical',
                                         }}
                                     />
@@ -387,9 +484,41 @@ export default function InboxPage() {
                                         gap: '8px'
                                     }}>
                                         <button
+                                            type="button"
+                                            onClick={handleGenerateDraft}
+                                            disabled={draftLoading || sending}
+                                            style={{
+                                                marginRight: '8px',
+                                                backgroundColor: '#e0e7ff',
+                                                color: '#3730a3',
+                                                border: '1px solid #c7d2fe',
+                                                padding: '8px 16px',
+                                                borderRadius: '6px',
+                                                cursor: 'pointer',
+                                                fontWeight: '500',
+                                                display: activeDraft ? 'none' : 'flex',
+                                                alignItems: 'center',
+                                                gap: '8px'
+                                            }}
+                                        >
+                                            {draftLoading ? '✨ Generating...' : '✨ AI Draft Reply'}
+                                        </button>
+
+                                        {activeDraft && (
+                                            <button
+                                                className="btn btn-secondary"
+                                                onClick={handleSaveDraft}
+                                                disabled={sending}
+                                                style={{ marginRight: '8px' }}
+                                            >
+                                                💾 Save Draft
+                                            </button>
+                                        )}
+
+                                        <button
                                             className="btn btn-primary"
                                             disabled={!replyBody.trim() || sending}
-                                            onClick={handleSendReply}
+                                            onClick={activeDraft ? handleSendDraft : handleSendReply}
                                         >
                                             {sending ? 'Sending...' : '🚀 Send Reply'}
                                         </button>

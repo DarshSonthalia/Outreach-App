@@ -32,7 +32,10 @@ class ReplyClassification(str, enum.Enum):
     UNSUBSCRIBE = "UNSUBSCRIBE"
     NEGATIVE = "NEGATIVE"
     NEUTRAL = "NEUTRAL"
+    INTERESTED = "INTERESTED"
     BOOKING_INTENT = "BOOKING_INTENT"
+    QUESTION = "QUESTION"
+    OUT_OF_OFFICE = "OUT_OF_OFFICE"
     UNKNOWN = "UNKNOWN"
 
 
@@ -54,4 +57,29 @@ class MailboxStatus(str, enum.Enum):
     ACTIVE = "ACTIVE"
     REAUTH_REQUIRED = "REAUTH_REQUIRED"
     DISCONNECTED = "DISCONNECTED"
+
+
+class FollowupState(str, enum.Enum):
+    SCHEDULED = "SCHEDULED"
+    CANCELLED = "CANCELLED"
+    COMPLETED = "COMPLETED"
+
+
+class CancelReason(str, enum.Enum):
+    REPLIED = "REPLIED"
+    NEGATIVE_REPLY = "NEGATIVE_REPLY"
+    UNSUBSCRIBE = "UNSUBSCRIBE"
+    BOOKED = "BOOKED"
+    BOUNCE = "BOUNCE"
+    SUPPRESSED = "SUPPRESSED"
+    MANUAL = "MANUAL"
+    SAFETY = "SAFETY"
+
+
+class DraftStatus(str, enum.Enum):
+    GENERATED = "GENERATED"
+    EDITED = "EDITED"
+    SENT = "SENT"
+    DISCARDED = "DISCARDED"
+    SAVED_TO_GMAIL_DRAFT = "SAVED_TO_GMAIL_DRAFT"
 

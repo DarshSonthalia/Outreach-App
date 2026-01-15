@@ -4,7 +4,11 @@ Pydantic schemas for API request/response validation.
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
 from datetime import datetime
-from app.enums import SafetyLevel, CampaignStatus, ReplyClassification
+from typing import Any, Dict
+from app.enums import (
+    SafetyLevel, CampaignStatus, ReplyClassification, 
+    FollowupState, CancelReason, DraftStatus
+)
 
 
 # ===========================================
@@ -192,6 +196,7 @@ class CampaignEmailContent(BaseModel):
     followup_subject: Optional[str] = None
     followup_body: Optional[str] = None
     max_followups: int = Field(default=2, ge=0, le=5)
+    followup_templates: Optional[List[Dict[str, Any]]] = None
 
 
 class CampaignResponse(BaseModel):
@@ -201,6 +206,7 @@ class CampaignResponse(BaseModel):
     pause_reason: Optional[str]
     subject: Optional[str]
     body: Optional[str]
+    followup_templates: Optional[List[Dict[str, Any]]] = None
     safety_level: SafetyLevel
     launched_at: Optional[datetime]
     created_at: datetime
@@ -233,6 +239,24 @@ class CampaignPreview(BaseModel):
     daily_send_limit: int
     safety_explanation: str
     sample_emails: List[dict]
+
+
+class CampaignScheduleItem(BaseModel):
+    lead_email: str
+    lead_name: str
+    followup_state: FollowupState
+    current_step: int
+    next_scheduled_at: Optional[datetime]
+    cancelled_at: Optional[datetime]
+    cancel_reason: Optional[CancelReason]
+    schedule_json: Optional[Any] = None # JSON for timeline
+
+
+class CampaignScheduleResponse(BaseModel):
+    campaign_name: str
+    campaign_id: int
+    followup_templates: Optional[List[dict]] = None
+    items: List[CampaignScheduleItem]
 
 
 # ===========================================

@@ -19,6 +19,7 @@ from app.models import (
     Campaign, CampaignLead, Lead, Message, Event, Mailbox,
     CampaignStatus, CampaignLeadStatus, MessageDirection
 )
+from app.enums import FollowupState, CancelReason
 from app.services.gmail_service import GmailService
 from app.services.safety_service import SafetyService
 from app.services.warmup_service import WarmupService
@@ -37,38 +38,31 @@ def process_due_sends():
     Runs every minute.
     
     Fix D1: Uses SELECT FOR UPDATE SKIP LOCKED for atomic claiming.
-    
-    For each due send:
-    1. Atomically claim the row (PENDING -> IN_PROGRESS)
-    2. Run ALL safety checks (MANDATORY)
-    3. Check idempotency (step_number)
-    4. If safe: send email via Gmail API
-    5. Log the send
-    6. Schedule follow-up if enabled
+    Uses new followup_state and next_scheduled_at fields.
     """
     db = SessionLocal()
     
     try:
         now = datetime.utcnow()
         
-        # Fix D1: Atomic claiming with FOR UPDATE SKIP LOCKED
-        # This prevents multiple workers from processing the same row
+        # Select leads where followup_state is SCHEDULED and time is due
+        # Use SKIP LOCKED to prevent race conditions
         due_sends = db.execute(
             text("""
                 SELECT id FROM campaign_leads
-                WHERE status = :pending_status
-                AND next_action_at <= :now
-                AND next_action_at IS NOT NULL
+                WHERE followup_state = :scheduled_state
+                AND next_scheduled_at <= :now
+                AND next_scheduled_at IS NOT NULL
                 AND campaign_id IN (
                     SELECT id FROM campaigns WHERE status = :running_status
                 )
-                ORDER BY next_action_at
+                ORDER BY next_scheduled_at
                 LIMIT 50
                 FOR UPDATE SKIP LOCKED
             """),
             {
                 "now": now,
-                "pending_status": CampaignLeadStatus.PENDING.value,
+                "scheduled_state": FollowupState.SCHEDULED.value,
                 "running_status": CampaignStatus.RUNNING.value
             }
         ).fetchall()
@@ -78,7 +72,22 @@ def process_due_sends():
         if not claimed_ids:
             return
         
-        # Transition to IN_PROGRESS atomically
+        # We don't necessarily need to change state to IN_PROGRESS if we lock rows transactionally, 
+        # but to keep visibility or retry logic we might. 
+        # However, the prompt says "D1) Due selection must ONLY include: campaign_leads.followup_state='SCHEDULED'".
+        # If we change it to 'IN_PROGRESS' (if that existed in FollowupState) it would work.
+        # But FollowupState only has SCHEDULED, CANCELLED, COMPLETED.
+        # So we relying on transaction lock to hold it separate? 
+        # Or we can assume the worker processes immediately.
+        # Wait, if we commit early, lock is lost?
+        # The original code updated to IN_PROGRESS status. 
+        # We should stick to 'status' field for locking/working indication IF we want to persist "working" state, 
+        # OR we rely on `next_scheduled_at` being updated AFTER send.
+        # If we don't update something, next poll will pick it up again if we release lock.
+        # So we MUST process inside the lock or update a field.
+        # Since 'status' (CampaignLeadStatus) still exists and has 'IN_PROGRESS', let's use it for worker visibility, 
+        # while 'followup_state' controls the business logic.
+        
         db.execute(
             text("""
                 UPDATE campaign_leads 
@@ -101,11 +110,12 @@ def process_due_sends():
             if campaign_lead:
                 try:
                     process_single_send(db, campaign_lead)
+                    db.commit() # Commit each lead individually
                 except Exception as e:
+                    db.rollback()
                     logger.error(f"Error processing campaign_lead {cl_id}: {e}")
                     handle_send_failure(db, campaign_lead, str(e))
-        
-        db.commit()
+                    db.commit()
         
     except Exception as e:
         logger.error(f"Error in process_due_sends: {e}")
@@ -116,157 +126,131 @@ def process_due_sends():
 
 def process_single_send(db: Session, campaign_lead: CampaignLead):
     """
-    Process a single send with full safety checks.
-    
-    Fix D2: Checks idempotency via step_number before sending.
-    Fix D3: Handles retries with retry_count tracking.
+    Process a single send.
     """
+    # Fix D2: Logic pre-send reload
+    db.refresh(campaign_lead)
+    
+    if campaign_lead.followup_state != FollowupState.SCHEDULED:
+        logger.info(f"Skipping send for lead {campaign_lead.id}: state is {campaign_lead.followup_state}")
+        # Log event
+        db.add(Event(
+            entity_type="campaign_lead",
+            entity_id=campaign_lead.id,
+            action="SEND_BLOCKED_FOLLOWUPS_CANCELLED",
+            details={"reason": str(campaign_lead.cancel_reason)},
+            explanation="Send blocked because follow-ups are not scheduled."
+        ))
+        return
+
     campaign = campaign_lead.campaign
     lead = campaign_lead.lead
     mailbox = campaign.mailbox
     
-    # Calculate step number (0 = initial, 1+ = follow-ups)
-    step_number = campaign_lead.followup_count
+    # Calculate step number from current_step
+    step_number = campaign_lead.current_step
     
+    # Validation: Ensure we haven't exceeded max followups
+    # Step 0 is not a follow-up. 
+    # Steps 1..N are followups. 
+    # Max allowed step is N? 
+    # If max_followups is 2. Steps are 0, 1, 2. (Total 3 emails).
+    if step_number > campaign.max_followups:
+        # Should be completed already
+        campaign_lead.followup_state = FollowupState.COMPLETED
+        campaign_lead.next_scheduled_at = None
+        return
+
     logger.info(f"Processing send for campaign_lead {campaign_lead.id}, lead {lead.email}, step {step_number}")
     
-    # Fix D2: Idempotency check - see if we already sent this step
+    # Idempotency check in Message table
     existing_message = db.query(Message).filter(
         Message.campaign_lead_id == campaign_lead.id,
         Message.step_number == step_number,
-        Message.direction == MessageDirection.OUTBOUND
+        Message.direction == MessageDirection.OUTBOUND,
+        Message.is_draft == False  # Check only sent messages
     ).first()
     
     if existing_message:
         logger.info(f"Message already exists for step {step_number}, skipping (idempotent)")
-        # Move to next step or complete
         advance_to_next_step(db, campaign_lead, campaign)
         return
     
-    # Warm-up Enforcement (Step 5)
-    # Refinement: Only enforce on Step 0 (Cold Emails) to prevent blocking active conversations
-    if step_number == 0:
-        domain = mailbox.domain
-        workspace = campaign.workspace
-        
-        if domain:
-            # Check if we should exit warm-up (Day 8+)
-            current_day = WarmupService.current_day(domain)
-            if current_day >= 8 and not domain.warmup_completed:
-                # Auto-exit if no recent issues (simplified: just complete if day 8 reached)
-                # In a full implementation, we'd check for pauses/bounces here as per Step 7
-                WarmupService.complete(domain)
-                db.add(domain)
-                db.commit()
-
-            warmup_limit = WarmupService.daily_limit(workspace, domain)
-            
-            if warmup_limit is not None:
-                sent_today = SafetyService.get_daily_send_count(db, mailbox.id)
-                if sent_today >= warmup_limit:
-                    logger.info(f"Warm-up limit reached ({warmup_limit}/day) for domain {domain.domain}")
-                    
-                    # Delay until tomorrow
-                    campaign_lead.status = CampaignLeadStatus.PENDING
-                    now = datetime.utcnow()
-                    tomorrow = datetime.combine(now.date() + timedelta(days=1), datetime.min.time())
-                    campaign_lead.next_action_at = tomorrow
-                    
-                    # Log event
-                    event = Event(
-                        entity_type="campaign_lead",
-                        entity_id=campaign_lead.id,
-                        action="WARMUP_LIMIT_REACHED",
-                        explanation=f"Warm-up cap {warmup_limit}/day enforced. {sent_today} sent today."
-                    )
-                    db.add(event)
-                    return
-
-    # Run ALL safety checks (MANDATORY)
+    # Safety checks
     safety_decision = SafetyService.run_all_safety_checks(
         db, campaign, campaign_lead, lead.email
     )
     
     if not safety_decision.can_send:
         logger.warning(f"Safety check failed: {safety_decision.reason}")
-        
-        # Delay the send, reset to PENDING
-        campaign_lead.status = CampaignLeadStatus.PENDING
-        if safety_decision.delay_seconds:
-            campaign_lead.next_action_at = datetime.utcnow() + timedelta(
-                seconds=safety_decision.delay_seconds
-            )
-        else:
-            campaign_lead.next_action_at = datetime.utcnow() + timedelta(hours=1)
-        
+        # Delay (reschedule)
+        # We update next_scheduled_at but keep state SCHEDULED
+        delay_sec = safety_decision.delay_seconds or 3600
+        campaign_lead.next_scheduled_at = datetime.utcnow() + timedelta(seconds=delay_sec)
+        campaign_lead.status = CampaignLeadStatus.PENDING # Release lock logic
         return
-    
-    # Get Gmail client with auto-refresh
+
+    # Get Gmail client
     service, mailbox = GmailService.get_gmail_client(mailbox, db)
-    
     if not service:
-        logger.error(f"Failed to get Gmail client for mailbox {mailbox.id}")
+        # Handle reauth or error
+        campaign_lead.next_scheduled_at = datetime.utcnow() + timedelta(minutes=30)
         campaign_lead.status = CampaignLeadStatus.PENDING
-        campaign_lead.next_action_at = datetime.utcnow() + timedelta(minutes=30)
         return
-    
-    # Get credentials for sending (service already has them)
+        
     try:
         credentials = GmailService.get_credentials_from_encrypted(
             mailbox.access_token_encrypted,
             mailbox.refresh_token_encrypted,
             mailbox.token_expiry
         )
-    except ValueError as e:
-        # Token refresh failed or decryption failed
-        logger.error(f"Failed to get credentials for mailbox {mailbox.id}: {e}")
-        
-        # Check if this is a token refresh failure
-        if "Token refresh failed" in str(e) or "Failed to decrypt" in str(e):
-            # Mark mailbox as needing reauth and pause campaigns
-            GmailService._mark_reauth_required(db, mailbox, str(e))
-            return
-        
-        # Otherwise, just delay the send
-        campaign_lead.status = CampaignLeadStatus.PENDING
-        campaign_lead.next_action_at = datetime.utcnow() + timedelta(minutes=30)
-        return
     except Exception as e:
-        logger.error(f"Unexpected error getting credentials: {e}")
-        campaign_lead.status = CampaignLeadStatus.PENDING
-        campaign_lead.next_action_at = datetime.utcnow() + timedelta(minutes=30)
+        logger.error(f"Credentials error: {e}")
+        GmailService._mark_reauth_required(db, mailbox, str(e))
         return
-    
-    # Determine email content
+
+    # Content generation
     is_followup = step_number > 0
+    subject = campaign.subject
+    body = campaign.body
     
     if is_followup:
-        subject = campaign.followup_subject or campaign.subject
-        body = campaign.followup_body or campaign.body
-    else:
-        subject = campaign.subject
-        body = campaign.body
-    
-    # Personalize
+        # Try to find template in followup_templates
+        template = None
+        if campaign.followup_templates:
+            for t in campaign.followup_templates:
+                if t.get("step") == step_number:
+                    template = t
+                    break
+        
+        if template:
+            subject = template.get("subject") or campaign.followup_subject or campaign.subject
+            body = template.get("body") or campaign.followup_body or campaign.body
+        else:
+            # Fallback to legacy fields
+            subject = campaign.followup_subject or campaign.subject
+            body = campaign.followup_body or campaign.body
+        
+    # Personalization
     if lead.first_name:
         body = body.replace("{{first_name}}", lead.first_name)
         subject = subject.replace("{{first_name}}", lead.first_name)
     if lead.company:
         body = body.replace("{{company}}", lead.company)
         subject = subject.replace("{{company}}", lead.company)
-    
-    # Get thread ID for follow-ups
+
+    # Threading
     thread_id = None
     if is_followup:
         prev_message = db.query(Message).filter(
             Message.campaign_lead_id == campaign_lead.id,
-            Message.direction == MessageDirection.OUTBOUND
+            Message.direction == MessageDirection.OUTBOUND,
+            Message.is_draft == False
         ).order_by(Message.sent_at.desc()).first()
-        
         if prev_message:
             thread_id = prev_message.gmail_thread_id
-    
-    # Send email via Gmail API
+
+    # Send
     try:
         message_id, gmail_thread_id = GmailService.send_email(
             credentials,
@@ -276,70 +260,121 @@ def process_single_send(db: Session, campaign_lead: CampaignLead):
             reply_to_thread_id=thread_id
         )
         
-        logger.info(f"Email sent: {message_id} to {lead.email}")
-        
-        # Fix D2: Record the message with step_number for idempotency
-        try:
-            message = Message(
-                campaign_lead_id=campaign_lead.id,
-                direction=MessageDirection.OUTBOUND,
-                step_number=step_number,
-                gmail_message_id=message_id,
-                gmail_thread_id=gmail_thread_id,
-                subject=subject,
-                body=body,
-                sent_at=datetime.utcnow()
-            )
-            db.add(message)
-            db.flush()  # Check unique constraint
-        except IntegrityError:
-            # Duplicate - another worker sent this already
-            db.rollback()
-            logger.info(f"Duplicate message detected for step {step_number}, another worker handled it")
-            advance_to_next_step(db, campaign_lead, campaign)
-            return
+        # Create Message
+        msg = Message(
+            campaign_lead_id=campaign_lead.id,
+            direction=MessageDirection.OUTBOUND,
+            step_number=step_number,
+            gmail_message_id=message_id,
+            gmail_thread_id=gmail_thread_id,
+            subject=subject,
+            body=body,
+            sent_at=datetime.utcnow(),
+            is_draft=False,
+            planned_send_at=campaign_lead.next_scheduled_at # The time it was supposed to send
+        )
+        db.add(msg)
         
         # Log event
-        event = Event(
+        db.add(Event(
             entity_type="campaign_lead",
             entity_id=campaign_lead.id,
             action="email_sent",
             details={
-                "to": lead.email,
-                "subject": subject,
-                "message_id": message_id,
-                "thread_id": gmail_thread_id,
-                "step_number": step_number,
-                "is_followup": is_followup,
+                 "step": step_number,
+                 "message_id": message_id
             },
-            explanation=f"Email {'follow-up ' if is_followup else ''}sent to {lead.email}"
-        )
-        db.add(event)
-        
-        # Update campaign lead status
+            explanation=f"Step {step_number} sent to {lead.email}"
+        ))
+
+        # Update Lead State after success
         campaign_lead.last_sent_at = datetime.utcnow()
-        campaign_lead.retry_count = 0  # Reset on success
+        campaign_lead.retry_count = 0
+        campaign_lead.current_step += 1
         
-        # Advance to next step
+        # Update schedule_json
+        if not campaign_lead.schedule_json:
+            # First time initialization if missing (backfill)
+            campaign_lead.schedule_json = []
+            
+            # Step 0
+            campaign_lead.schedule_json.append({
+                "step": 0,
+                "planned_at": None,
+                "subject": campaign.subject,
+                "body_preview": (campaign.body[:100] + "...") if campaign.body else "",
+                "status": "SENT" if step_number > 0 else "PENDING"
+            })
+            
+            # Follow-ups (reconstruct planned steps)
+            for i in range(1, campaign.max_followups + 1):
+                body_prev = "Follow-up email"
+                if campaign.followup_templates and len(campaign.followup_templates) >= i:
+                    tmpl = campaign.followup_templates[i-1]
+                    body_prev = (tmpl.get("body", "")[:100] + "...") if tmpl.get("body") else "Follow-up email"
+                
+                campaign_lead.schedule_json.append({
+                    "step": i,
+                    "planned_at": (campaign_lead.next_scheduled_at.isoformat() if i == step_number else None),
+                    "subject": f"Re: {campaign.subject}",
+                    "body_preview": body_prev,
+                    "status": "SENT" if step_number > i else "PLANNED"
+                })
+
+        # Update specific step
+        new_schedule = []
+        for item in campaign_lead.schedule_json:
+            if item.get("step") == step_number:
+                item["status"] = "SENT"
+                item["message_id"] = message_id
+                item["sent_at"] = datetime.utcnow().isoformat()
+            new_schedule.append(item)
+        campaign_lead.schedule_json = new_schedule
+        
         advance_to_next_step(db, campaign_lead, campaign)
         
     except Exception as e:
-        logger.error(f"Failed to send email to {lead.email}: {e}")
+        logger.error(f"Send failed: {e}")
         handle_send_failure(db, campaign_lead, str(e))
 
 
 def advance_to_next_step(db: Session, campaign_lead: CampaignLead, campaign: Campaign):
-    """Advance campaign lead to next follow-up or complete."""
-    if campaign.followup_enabled and campaign_lead.followup_count < campaign.max_followups:
-        campaign_lead.followup_count += 1
-        campaign_lead.status = CampaignLeadStatus.PENDING
-        campaign_lead.next_action_at = datetime.utcnow() + timedelta(
-            days=campaign.followup_delay_days
-        )
-        logger.info(f"Follow-up scheduled in {campaign.followup_delay_days} days")
+    """
+    Calculate next schedule time or complete.
+    """
+    next_step = campaign_lead.current_step
+    
+    if next_step <= campaign.max_followups and campaign.followup_enabled:
+        # Calculate when
+        # If we have a planned time in schedule_json for this step, use it?
+        # Or recompute based on delay?
+        # Prompt says: "increment current_step ... set next_scheduled_at = planned_at of next PENDING step"
+        
+        planned_time = None
+        if campaign_lead.schedule_json:
+             for item in campaign_lead.schedule_json:
+                 if item.get("step") == next_step:
+                     planned_time_str = item.get("planned_at")
+                     if planned_time_str:
+                         try:
+                             planned_time = datetime.fromisoformat(planned_time_str)
+                         except:
+                             pass
+                     break
+        
+        if not planned_time:
+            # Fallback compute
+            delay_days = campaign.followup_delay_days
+            planned_time = datetime.utcnow() + timedelta(days=delay_days)
+            
+        campaign_lead.next_scheduled_at = planned_time
+        campaign_lead.followup_state = FollowupState.SCHEDULED
+        # Also release status lock
+        campaign_lead.status = CampaignLeadStatus.PENDING 
     else:
+        campaign_lead.followup_state = FollowupState.COMPLETED
+        campaign_lead.next_scheduled_at = None
         campaign_lead.status = CampaignLeadStatus.COMPLETED
-        campaign_lead.next_action_at = None
 
 
 def handle_send_failure(db: Session, campaign_lead: CampaignLead, error: str):

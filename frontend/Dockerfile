@@ -9,14 +9,11 @@ RUN npm install
 # Copy application
 COPY . .
 
-# Build the application
-RUN npm run build
-
 # Set environment
-ENV NODE_ENV=production
+ENV NODE_ENV=development
 
 # Expose port
 EXPOSE 3000
 
-# Run the application
-CMD ["npm", "start"]
+# Run the application (overridden by compose, but good for base)
+CMD ["npm", "run", "dev"]

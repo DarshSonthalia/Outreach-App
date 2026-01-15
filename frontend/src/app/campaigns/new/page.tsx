@@ -38,6 +38,7 @@ export default function NewCampaignPage() {
     const [followupDays, setFollowupDays] = useState(3);
     const [followupSubject, setFollowupSubject] = useState('');
     const [followupBody, setFollowupBody] = useState('');
+    const [followupTemplates, setFollowupTemplates] = useState<any[]>([]);
 
     const [campaignId, setCampaignId] = useState<number | null>(null);
     const [preview, setPreview] = useState<any>(null);
@@ -159,11 +160,19 @@ export default function NewCampaignPage() {
                 setDraftResponse(draft);
                 setSubject(draft.subject);
                 setBody(draft.body);
-                if (draft.followup_subject) {
-                    setFollowupSubject(draft.followup_subject);
-                }
-                if (draft.followup_body) {
-                    setFollowupBody(draft.followup_body);
+                if (draft.followup_templates) {
+                    setFollowupTemplates(draft.followup_templates);
+                    if (draft.followup_templates.length > 0) {
+                        setFollowupSubject(draft.followup_templates[0].subject);
+                        setFollowupBody(draft.followup_templates[0].body);
+                    }
+                } else {
+                    if (draft.followup_subject) {
+                        setFollowupSubject(draft.followup_subject);
+                    }
+                    if (draft.followup_body) {
+                        setFollowupBody(draft.followup_body);
+                    }
                 }
             } catch (draftErr: any) {
                 console.error('Error generating copy:', draftErr);
@@ -188,13 +197,14 @@ export default function NewCampaignPage() {
         setError(null);
 
         try {
-            await campaigns.setEmails(token, campaignId, {
+            const result = await campaigns.setEmails(token, campaignId, {
                 subject,
                 body,
                 followup_enabled: followupEnabled,
                 followup_delay_days: followupDays,
-                followup_subject: followupSubject || undefined,
-                followup_body: followupBody || undefined,
+                followup_subject: followupSubject,
+                followup_body: followupBody,
+                followup_templates: followupTemplates,
             });
 
             const previewData = await campaigns.preview(token, campaignId);
@@ -801,30 +811,77 @@ export default function NewCampaignPage() {
                                     </div>
                                 )}
 
-                                <div style={{ marginBottom: '20px' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                                <div style={{ marginBottom: '24px', borderTop: '1px solid var(--border-color)', paddingTop: '24px' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: '16px' }}>
                                         <input
                                             type="checkbox"
                                             checked={followupEnabled}
                                             onChange={(e) => setFollowupEnabled(e.target.checked)}
                                         />
-                                        <span>Enable follow-up emails</span>
+                                        <span style={{ fontWeight: 600 }}>Enable follow-up sequence</span>
                                     </label>
+
                                     {followupEnabled && (
-                                        <div style={{ marginTop: '12px', paddingLeft: '24px' }}>
-                                            <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)' }}>
-                                                Days between follow-ups
-                                            </label>
-                                            <select
-                                                className="input"
-                                                value={followupDays}
-                                                onChange={(e) => setFollowupDays(Number(e.target.value))}
-                                                style={{ width: 'auto' }}
-                                            >
-                                                {[2, 3, 4, 5, 7].map(d => (
-                                                    <option key={d} value={d}>{d} days</option>
+                                        <div style={{ paddingLeft: '24px' }}>
+                                            <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                                <span style={{ color: 'var(--text-secondary)' }}>Send each follow-up after</span>
+                                                <select
+                                                    className="input"
+                                                    value={followupDays}
+                                                    onChange={(e) => setFollowupDays(Number(e.target.value))}
+                                                    style={{ width: 'auto' }}
+                                                >
+                                                    {[2, 3, 4, 5, 7].map(d => (
+                                                        <option key={d} value={d}>{d} days</option>
+                                                    ))}
+                                                </select>
+                                                <span style={{ color: 'var(--text-secondary)' }}>of no reply</span>
+                                            </div>
+
+                                            <div style={{ display: 'grid', gap: '20px' }}>
+                                                {followupTemplates.map((tmpl, idx) => (
+                                                    <div key={idx} style={{
+                                                        padding: '16px',
+                                                        background: 'var(--bg-secondary)',
+                                                        borderRadius: '8px',
+                                                        border: '1px solid var(--border-color)'
+                                                    }}>
+                                                        <div style={{ fontWeight: 600, marginBottom: '12px', display: 'flex', justifyContent: 'space-between' }}>
+                                                            <span>Follow-up #{idx + 1} (Step {idx + 1})</span>
+                                                            <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 'normal' }}>
+                                                                Will send ~{followupDays * (idx + 1)} days after initial email
+                                                            </span>
+                                                        </div>
+                                                        <div style={{ marginBottom: '12px' }}>
+                                                            <input
+                                                                type="text"
+                                                                className="input"
+                                                                value={tmpl.subject}
+                                                                onChange={(e) => {
+                                                                    const newDrafts = [...followupTemplates];
+                                                                    newDrafts[idx].subject = e.target.value;
+                                                                    setFollowupTemplates(newDrafts);
+                                                                    if (idx === 0) setFollowupSubject(e.target.value);
+                                                                }}
+                                                                placeholder="Subject"
+                                                            />
+                                                        </div>
+                                                        <textarea
+                                                            className="input"
+                                                            value={tmpl.body}
+                                                            onChange={(e) => {
+                                                                const newDrafts = [...followupTemplates];
+                                                                newDrafts[idx].body = e.target.value;
+                                                                setFollowupTemplates(newDrafts);
+                                                                if (idx === 0) setFollowupBody(e.target.value);
+                                                            }}
+                                                            placeholder="Body"
+                                                            rows={4}
+                                                            style={{ fontSize: '14px' }}
+                                                        />
+                                                    </div>
                                                 ))}
-                                            </select>
+                                            </div>
                                         </div>
                                     )}
                                 </div>
