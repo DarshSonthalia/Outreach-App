@@ -134,18 +134,13 @@ DRAFT_SCHEMA = {
             "minLength": 20,
             "maxLength": 1200,
         },
-        "followup_templates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "step": {"type": "integer"},
-                    "subject": {"type": "string", "maxLength": 80},
-                    "body": {"type": "string", "maxLength": 1200}
-                },
-                "required": ["step", "subject", "body"]
-            }
+        "followup_subject": {
+            "type": "string",
+            "maxLength": 80,
+        },
+        "followup_body": {
+            "type": "string",
+            "maxLength": 1200,
         },
         "personalization_vars_used": {
             "type": "array",
@@ -158,55 +153,20 @@ DRAFT_SCHEMA = {
             "maxItems": 10,
         },
     },
-    "required": ["subject", "body", "followup_templates", "personalization_vars_used", "risky_phrases_found"],
+    "required": ["subject", "body", "personalization_vars_used", "risky_phrases_found", "followup_subject", "followup_body"],
 }
 
-DRAFT_INSTRUCTIONS = """ROLE:
-You are a safety-first B2B cold email copywriter for low-volume outreach.
-Your job is to write an email that:
-- does NOT look promotional
-- does NOT read like a sales pitch
-- does NOT introduce claims or offers
-- does NOT ask for a meeting directly
-- does NOT sound automated
-
-HARD CONSTRAINTS (NON-NEGOTIABLE):
-1) PERSONALIZATION
-- You MUST use placeholders where appropriate: {{first_name}}, {{company}}, {{title}}.
-- If unsure, omit a placeholder rather than inventing context.
-
-2) SALES LANGUAGE (FORBIDDEN)
-- NO "introduce our services"
-- NO "offer", "audit", "review", "assessment"
-- NO "schedule a call", "book a meeting"
-- NO "we provide", "we help companies"
-- NO pricing, urgency, or CTA pressure
-
-3) TONE
-- Human, Curious, Non-assumptive
-- One person writing to another
-- Reads like a genuine 1:1 message
-
-4) CTA RULE
-- The ONLY acceptable CTA is a QUESTION.
-- The question must be easy to ignore (low friction).
-- The email must feel complete if they don't reply.
- 
-5) LENGTH & SEQUENCE
-- Max 120 words total per email.
-- Short paragraphs.
-- No bullet points.
-- If include_followup=true, generate a SEQUENCE of 3 follow-ups (Steps 1, 2, 3).
-- Follow-up #1 (Step 1): Be brief, reference previous email.
-- Follow-up #2 (Step 2): New value point or light nudge.
-- Follow-up #3 (Step 3): Breakup/final nudge. Still polite and curious.
- 
-GOAL:
-To start a conversation by showing light awareness of their context and asking how they currently think about the problem. Making replying feel optional.
- 
-Output MUST follow the JSON schema strictly. 
-- If include_followup=true, populate followup_templates with exactly 3 items.
-- If include_followup=false, populate followup_templates with an empty array []."""
+DRAFT_INSTRUCTIONS = """You write safe, human-sounding B2B cold emails for low-volume outreach.
+Hard rules:
+- No hype, no buzzwords, no exaggerated claims.
+- No fake personalization. Do not guess facts about the recipient or company.
+- No pressure language, no urgency, no "quick call", no meeting requests.
+- Keep it short and plain. Prefer 60–120 words for the body.
+- The FIRST email must be inquisitive and light-touch: lead with a question and aim for a foot-in-the-door reply.
+- Use ONLY these variables if relevant: {{first_name}}, {{company}}, {{title}}.
+- If a variable is available, include one light-touch personalization at most. Do not force it.
+- If unsure, omit personalization entirely.
+Output MUST follow the JSON schema strictly."""
 
 
 def generate_campaign_draft(
@@ -215,6 +175,12 @@ def generate_campaign_draft(
     target_role: str,
     offer_type: str,
     target_region: str,
+    pain_points: Optional[str] = None,
+    value_prop: Optional[str] = None,
+    social_proof: Optional[str] = None,
+    cta_preference: Optional[str] = None,
+    personalization_notes: Optional[str] = None,
+    additional_context: Optional[str] = None,
     tone: str = "friendly",
     length: str = "medium",
     include_followup: bool = True,
@@ -238,24 +204,45 @@ def generate_campaign_draft(
     Raises:
         LLMError on timeout, API error, or invalid output
     """
-    # NOTE: SMOKE_TEST_MODE removed to ensure real AI generation is used with new safety prompt.
-    
+    # If running a local smoke test, skip external OpenAI calls and return a canned draft
+    if os.getenv("SMOKE_TEST_MODE") == "1":
+        logger.info("SMOKE_TEST_MODE enabled - returning canned draft (no OpenAI call)")
+        return _smoke_test_draft()
+    extra_lines = []
+    if pain_points:
+        extra_lines.append(f"- Pain points: {pain_points}")
+    if value_prop:
+        extra_lines.append(f"- Value prop: {value_prop}")
+    if social_proof:
+        extra_lines.append(f"- Social proof: {social_proof}")
+    if cta_preference:
+        extra_lines.append(f"- CTA preference: {cta_preference}")
+    if personalization_notes:
+        extra_lines.append(f"- Personalization notes: {personalization_notes}")
+    if additional_context:
+        extra_lines.append(f"- Additional context: {additional_context}")
+
+    extra_context = "\n".join(extra_lines)
+    if extra_context:
+        extra_context = "\n" + extra_context
+
     input_text = f"""CONTEXT (do not invent details):
 - What we sell: {what_you_sell}
 - Target industry: {target_industry}
 - Target role: {target_role}
 - Offer type: {offer_type}
 - Target region: {target_region}
+{extra_context}
 
 WRITING SETTINGS:
 - Tone: {tone}
 - Length: {length}
 - Include follow-up: {include_followup}
- 
+
 OUTPUT REQUIREMENTS:
-- Provide a subject and an email body for Step 0.
-- If include_followup=true, provide a list of 3 follow-up templates in followup_templates (steps 1, 2, 3).
-- The emails MUST adhere to the safety guidelines in the system prompt.
+- Provide a subject and an email body.
+- If include_followup=true, also provide followup_subject and followup_body.
+- Avoid spammy words (free, guarantee, act now, limited time, click here).
 - Output must follow the JSON schema strictly."""
 
     return _call_responses_api(
@@ -264,7 +251,7 @@ OUTPUT REQUIREMENTS:
         input_text=input_text,
         json_schema=DRAFT_SCHEMA,
         temperature=0.3,
-        max_output_tokens=1500,
+        max_output_tokens=400,
     )
 
 
@@ -273,23 +260,8 @@ def _smoke_test_draft() -> Dict[str, Any]:
     return {
         "subject": "Quick question about your {{company}} data",
         "body": "Hi {{first_name}},\n\nI help teams using analytics tools get clearer product insights without extra engineering. Would you be open to a short chat to see if there's a fit?\n\nBest,\nThe Team",
-        "followup_templates": [
-            {
-                "step": 1,
-                "subject": "Re: Quick question about your {{company}} data",
-                "body": "Hey {{first_name}},\n\nJust checking in — did you see my note about analytics?\n\nThanks,"
-            },
-            {
-                "step": 2,
-                "subject": "Re: Quick question about your {{company}} data",
-                "body": "Hi {{first_name}},\n\nI was just thinking about how manual data cleaning slows down product teams. Is that something you see as well?\n\nBest,"
-            },
-            {
-                "step": 3,
-                "subject": "Final check-in",
-                "body": "Hi {{first_name}},\n\nSince I haven't heard back, I'll assume this isn't a priority right now. Feel free to reach out if things change!\n\nBest,"
-            }
-        ],
+        "followup_subject": "Following up on my note",
+        "followup_body": "Hey {{first_name}},\n\nJust checking in — did you see my note about analytics?\n\nThanks,",
         "personalization_vars_used": ["{{first_name}}", "{{company}}"],
         "risky_phrases_found": [],
     }

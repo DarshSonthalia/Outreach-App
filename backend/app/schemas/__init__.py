@@ -29,7 +29,7 @@ from app.schemas.schemas import (
     SendReplyRequest,
     CalendlyWebhookPayload,
     CampaignScheduleItem,
-    CampaignScheduleResponse,
+    CancelFollowupsRequest,
 )
 
 __all__ = [
@@ -60,5 +60,5 @@ __all__ = [
     "SendReplyRequest",
     "CalendlyWebhookPayload",
     "CampaignScheduleItem",
-    "CampaignScheduleResponse",
+    "CancelFollowupsRequest",
 ]

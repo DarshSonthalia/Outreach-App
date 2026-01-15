@@ -84,6 +84,9 @@ export const workspaces = {
             body: data,
             token,
         }),
+
+    safetyStatus: (token: string, id: number) =>
+        apiRequest<any>(`/api/workspaces/${id}/safety-status`, { token }),
 };
 
 // Mailboxes
@@ -222,10 +225,11 @@ export const campaigns = {
     getSchedule: (token: string, id: number) =>
         apiRequest<any>(`/api/campaigns/${id}/schedule`, { token }),
 
-    cancelLeadFollowups: (token: string, leadId: number) =>
-        apiRequest<any>(`/api/campaigns/leads/${leadId}/cancel-followups`, {
+    cancelLeadFollowups: (token: string, campaignLeadId: number, reason: string, detail: string) =>
+        apiRequest<any>(`/api/campaign_leads/${campaignLeadId}/cancel-followups`, {
             method: 'POST',
-            token
+            body: { reason, detail },
+            token,
         }),
 };
 
@@ -312,6 +316,15 @@ export const inbox = {
         }),
 };
 
+export const booking = {
+    setupInfo: (token: string) =>
+        apiRequest<any>('/api/booking/setup-info', { token }),
+};
+
+export const health = {
+    celery: () => apiRequest<any>('/api/health/celery'),
+};
+
 export default {
     auth,
     workspaces,
@@ -322,4 +335,6 @@ export default {
     campaignsAI,
     inbox,
     inboxAI,
+    booking,
+    health,
 };

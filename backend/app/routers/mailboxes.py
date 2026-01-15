@@ -12,7 +12,7 @@ from app.schemas import MailboxResponse, OAuthUrlResponse
 from app.utils.dependencies import get_current_user
 from app.services.gmail_service import GmailService
 from app.services.domain_service import DomainService
-from app.enums import CampaignStatus
+from app.enums import CampaignStatus, MailboxStatus
 
 router = APIRouter()
 
@@ -47,8 +47,10 @@ def _resume_paused_campaigns_for_mailbox(db: Session, mailbox: Mailbox):
             CampaignLead.status == CampaignLeadStatus.PENDING
         ).all()
         
+        from app.enums import FollowupState
         for i, cl in enumerate(pending_leads):
-            cl.next_action_at = now + timedelta(minutes=i * 2)
+            cl.next_scheduled_at = now + timedelta(minutes=i * 2)
+            cl.followup_state = FollowupState.SCHEDULED
     
     if paused_campaigns:
         db.commit()
@@ -130,7 +132,8 @@ async def oauth_callback(
             existing.refresh_token_encrypted = refresh_encrypted
             existing.token_expiry = expiry
             existing.is_active = True
-            existing.status = "ACTIVE"  # Mark as re-authenticated
+            existing.status = MailboxStatus.ACTIVE
+            existing.error_reason = None
             db.commit()
             mailbox = existing
             

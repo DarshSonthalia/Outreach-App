@@ -2,13 +2,9 @@
 Pydantic schemas for API request/response validation.
 """
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime
-from typing import Any, Dict
-from app.enums import (
-    SafetyLevel, CampaignStatus, ReplyClassification, 
-    FollowupState, CancelReason, DraftStatus
-)
+from app.enums import SafetyLevel, CampaignStatus, ReplyClassification
 
 
 # ===========================================
@@ -71,8 +67,6 @@ class WorkspaceResponse(BaseModel):
     offer_type: Optional[str]
     safety_preference: SafetyLevel
     has_leads: bool
-    warmup_enabled: bool = False
-    warmup_start_date: Optional[datetime] = None
     created_at: datetime
 
     class Config:
@@ -87,6 +81,8 @@ class MailboxResponse(BaseModel):
     id: int
     email: str
     is_active: bool
+    status: Optional[str] = None
+    error_reason: Optional[str] = None
     connected_at: datetime
 
     class Config:
@@ -112,9 +108,8 @@ class DomainResponse(BaseModel):
     spf_record: Optional[str]
     dmarc_valid: Optional[bool]
     dmarc_record: Optional[str]
-    warmup_day: int
-    warmup_completed: bool
     last_checked_at: Optional[datetime]
+    recommendations: Optional[List[str]] = None
 
     class Config:
         from_attributes = True
@@ -196,7 +191,6 @@ class CampaignEmailContent(BaseModel):
     followup_subject: Optional[str] = None
     followup_body: Optional[str] = None
     max_followups: int = Field(default=2, ge=0, le=5)
-    followup_templates: Optional[List[Dict[str, Any]]] = None
 
 
 class CampaignResponse(BaseModel):
@@ -206,7 +200,6 @@ class CampaignResponse(BaseModel):
     pause_reason: Optional[str]
     subject: Optional[str]
     body: Optional[str]
-    followup_templates: Optional[List[Dict[str, Any]]] = None
     safety_level: SafetyLevel
     launched_at: Optional[datetime]
     created_at: datetime
@@ -226,6 +219,8 @@ class CampaignDashboard(BaseModel):
     total_emails_sent: int
     replies_count: int
     meetings_booked: int
+    meetings_booked_today: int = 0
+    meetings_booked_7d: int = 0
     
     # Safety
     daily_limit: int
@@ -242,21 +237,22 @@ class CampaignPreview(BaseModel):
 
 
 class CampaignScheduleItem(BaseModel):
+    campaign_lead_id: int
     lead_email: str
-    lead_name: str
-    followup_state: FollowupState
-    current_step: int
+    lead_name: Optional[str]
+    followup_state: str
     next_scheduled_at: Optional[datetime]
+    current_step: int
+    max_followups: int
+    cancel_reason: Optional[str]
+    cancel_detail: Optional[str]
     cancelled_at: Optional[datetime]
-    cancel_reason: Optional[CancelReason]
-    schedule_json: Optional[Any] = None # JSON for timeline
+    schedule_json: Optional[List[Any]]
 
 
-class CampaignScheduleResponse(BaseModel):
-    campaign_name: str
-    campaign_id: int
-    followup_templates: Optional[List[dict]] = None
-    items: List[CampaignScheduleItem]
+class CancelFollowupsRequest(BaseModel):
+    reason: str
+    detail: str
 
 
 # ===========================================

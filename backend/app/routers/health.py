@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 @router.get("/")
 def health_check():
     """Basic health check."""
-    return {"status": "healthy", "service": "outreach-api"}
+    return {"ok": True}
 
 
 @router.get("/db")

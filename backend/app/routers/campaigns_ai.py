@@ -3,7 +3,7 @@ Campaign AI endpoints - draft generation and risk linting.
 """
 import logging
 import os
-from typing import Optional, List
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -38,7 +38,8 @@ class DraftRequest(BaseModel):
 class DraftResponse(BaseModel):
     subject: str
     body: str
-    followup_templates: Optional[List[dict]] = None
+    followup_subject: Optional[str] = None
+    followup_body: Optional[str] = None
     personalization_vars_used: list[str]
     risky_phrases_found: list[str]
 
@@ -114,6 +115,13 @@ async def ai_generate_draft(
     offer_type = wizard_answers.get("offer_type") or getattr(workspace, "offer_type", "consultation")
     target_region = wizard_answers.get("target_region") or getattr(workspace, "target_region", "global")
 
+    pain_points = None
+    value_prop = None
+    social_proof = None
+    cta_preference = None
+    personalization_notes = None
+    additional_context = None
+
     # Campaign-specific `customer_info` on the campaign record overrides workspace wizard answers.
     # Fall back to Event-based storage if the campaign column is empty (back-compat).
     try:
@@ -135,6 +143,12 @@ async def ai_generate_draft(
             target_role = campaign_info.get("target_role") or target_role
             offer_type = campaign_info.get("offer_type") or offer_type
             target_region = campaign_info.get("target_region") or target_region
+            pain_points = campaign_info.get("pain_points") or pain_points
+            value_prop = campaign_info.get("value_prop") or value_prop
+            social_proof = campaign_info.get("social_proof") or social_proof
+            cta_preference = campaign_info.get("cta_preference") or cta_preference
+            personalization_notes = campaign_info.get("personalization_notes") or personalization_notes
+            additional_context = campaign_info.get("additional_context") or additional_context
     except Exception:
         pass
     
@@ -150,6 +164,12 @@ async def ai_generate_draft(
 - Target role: {target_role}
 - Offer type: {offer_type}
 - Target region: {target_region}
+ - Pain points: {pain_points or 'n/a'}
+ - Value prop: {value_prop or 'n/a'}
+ - Social proof: {social_proof or 'n/a'}
+ - CTA preference: {cta_preference or 'n/a'}
+ - Personalization notes: {personalization_notes or 'n/a'}
+ - Additional context: {additional_context or 'n/a'}
 
 WRITING SETTINGS:
 - Tone: {request.tone}
@@ -172,6 +192,12 @@ OUTPUT REQUIREMENTS:
             target_role=target_role,
             offer_type=offer_type,
             target_region=target_region,
+            pain_points=pain_points,
+            value_prop=value_prop,
+            social_proof=social_proof,
+            cta_preference=cta_preference,
+            personalization_notes=personalization_notes,
+            additional_context=additional_context,
             tone=request.tone,
             length=request.length,
             include_followup=request.include_followup,
@@ -199,7 +225,8 @@ OUTPUT REQUIREMENTS:
         return DraftResponse(
             subject=draft.get("subject", ""),
             body=draft.get("body", ""),
-            followup_templates=draft.get("followup_templates"),
+            followup_subject=draft.get("followup_subject"),
+            followup_body=draft.get("followup_body"),
             personalization_vars_used=draft.get("personalization_vars_used", []),
             risky_phrases_found=draft.get("risky_phrases_found", []),
         )
@@ -224,7 +251,8 @@ OUTPUT REQUIREMENTS:
             return DraftResponse(
                 subject=fallback.get("subject", ""),
                 body=fallback.get("body", ""),
-                followup_templates=fallback.get("followup_templates"),
+                followup_subject=fallback.get("followup_subject"),
+                followup_body=fallback.get("followup_body"),
                 personalization_vars_used=fallback.get("personalization_vars_used", []),
                 risky_phrases_found=fallback.get("risky_phrases_found", []),
             )

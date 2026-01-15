@@ -7,6 +7,7 @@ Fix Set B: OAuth Token Security + Refresh
 """
 import base64
 import logging
+import time
 from datetime import datetime
 from email.mime.text import MIMEText
 from typing import Optional, Tuple, List, Dict, Any
@@ -33,11 +34,28 @@ GMAIL_SCOPES = [
 ]
 
 
+class RateLimitError(Exception):
+    """Raised when Gmail API rate limit is hit."""
+
+
+def _is_rate_limit_error(error: Exception) -> bool:
+    try:
+        if isinstance(error, HttpError):
+            status = getattr(error.resp, "status", None)
+            if status == 429:
+                return True
+            if status == 403 and "rateLimitExceeded" in str(error):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 class GmailService:
     """
     Gmail API service for sending emails and polling replies.
     """
-    
+
     @staticmethod
     def get_oauth_flow(redirect_uri: Optional[str] = None) -> Flow:
         """Create OAuth flow for Gmail authorization."""
@@ -201,6 +219,7 @@ class GmailService:
                     mailbox.refresh_token_encrypted = refresh_enc
                     mailbox.token_expiry = credentials.expiry
                     mailbox.status = MailboxStatus.ACTIVE
+                    mailbox.error_reason = None
                     db.commit()
                     
                     logger.info(f"Successfully refreshed tokens for mailbox {mailbox.id}, token expires at {credentials.expiry}")
@@ -231,6 +250,7 @@ class GmailService:
         
         mailbox.status = MailboxStatus.REAUTH_REQUIRED
         mailbox.is_active = False
+        mailbox.error_reason = reason
         
         # Pause all campaigns using this mailbox
         campaigns = db.query(Campaign).filter(
@@ -246,9 +266,9 @@ class GmailService:
         event = Event(
             entity_type="mailbox",
             entity_id=mailbox.id,
-            action="reauth_required",
+            action="MAILBOX_REAUTH_REQUIRED",
             details={"reason": reason},
-            explanation=f"Mailbox marked as requiring re-authentication: {reason}. All campaigns paused."
+            explanation="Mailbox requires re-authentication. Campaigns paused."
         )
         db.add(event)
         db.commit()
@@ -277,16 +297,31 @@ class GmailService:
         message["to"] = to_email
         message["subject"] = subject
         
+        def _execute_with_backoff(fn, max_retries: int = 3, base_delay: float = 1.0):
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    return fn()
+                except HttpError as e:
+                    last_error = e
+                    if attempt < max_retries - 1 and (e.resp.status in [429, 500, 503] or _is_rate_limit_error(e)):
+                        sleep_for = min(base_delay * (2 ** attempt), 8)
+                        time.sleep(sleep_for)
+                        continue
+                    raise
+            if last_error:
+                raise last_error
+
         # Robust Threading: If replying, set proper headers
         if reply_to_message_id:
             try:
                 # Fetch original message to get its RFC Message-ID header
-                orig_msg = service.users().messages().get(
-                    userId="me", 
-                    id=reply_to_message_id, 
-                    format="metadata", 
+                orig_msg = _execute_with_backoff(lambda: service.users().messages().get(
+                    userId="me",
+                    id=reply_to_message_id,
+                    format="metadata",
                     metadataHeaders=["Message-ID", "References"]
-                ).execute()
+                ).execute())
                 
                 headers = orig_msg.get("payload", {}).get("headers", [])
                 rfc_message_id = next((h["value"] for h in headers if h["name"].lower() == "message-id"), "")
@@ -313,10 +348,10 @@ class GmailService:
             body_params["threadId"] = reply_to_thread_id
         
         try:
-            sent_message = service.users().messages().send(
+            sent_message = _execute_with_backoff(lambda: service.users().messages().send(
                 userId="me",
                 body=body_params
-            ).execute()
+            ).execute())
             
             message_id = sent_message.get("id", "")
             thread_id = sent_message.get("threadId", "")
@@ -325,6 +360,11 @@ class GmailService:
             
             return message_id, thread_id
             
+        except HttpError as e:
+            if _is_rate_limit_error(e):
+                raise RateLimitError(str(e))
+            logger.error(f"Failed to send email: {e}")
+            raise
         except Exception as e:
             logger.error(f"Failed to send email: {e}")
             raise
@@ -453,25 +493,48 @@ class GmailService:
     def _parse_message(message: Dict[str, Any]) -> Dict[str, Any]:
         """Parse a Gmail message into our format."""
         headers = message.get("payload", {}).get("headers", [])
-        
+
         def get_header(name: str) -> str:
             for h in headers:
                 if h["name"].lower() == name.lower():
                     return h["value"]
             return ""
-        
-        # Extract body
-        body = ""
+
+        def decode_body(data: str) -> str:
+            return base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
+
+        def strip_html(html: str) -> str:
+            import re
+            text = re.sub(r"<[^>]+>", " ", html)
+            text = re.sub(r"\s+", " ", text).strip()
+            return text
+
+        def extract_from_payload(payload: Dict[str, Any]) -> str:
+            if payload.get("body", {}).get("data"):
+                return decode_body(payload["body"]["data"])
+
+            parts = payload.get("parts", []) or []
+            plain = ""
+            html = ""
+            for part in parts:
+                mime_type = part.get("mimeType", "")
+                if mime_type == "text/plain" and part.get("body", {}).get("data"):
+                    plain = decode_body(part["body"]["data"])
+                elif mime_type == "text/html" and part.get("body", {}).get("data"):
+                    html = decode_body(part["body"]["data"])
+                elif part.get("parts"):
+                    nested = extract_from_payload(part)
+                    if nested and not plain:
+                        plain = nested
+            if plain:
+                return plain
+            if html:
+                return strip_html(html)
+            return ""
+
         payload = message.get("payload", {})
-        
-        if "body" in payload and payload["body"].get("data"):
-            body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="ignore")
-        elif "parts" in payload:
-            for part in payload["parts"]:
-                if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
-                    body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="ignore")
-                    break
-        
+        body = extract_from_payload(payload)
+
         return {
             "id": message.get("id", ""),
             "thread_id": message.get("threadId", ""),

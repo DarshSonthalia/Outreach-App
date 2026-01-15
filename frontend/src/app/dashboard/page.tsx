@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { auth, workspaces, campaigns, mailboxes } from '@/lib/api';
+import { auth, workspaces, campaigns, mailboxes, health } from '@/lib/api';
 
 interface Campaign {
     id: number;
@@ -33,6 +33,8 @@ export default function DashboardPage() {
     const [activeCampaigns, setActiveCampaigns] = useState<CampaignDashboard[]>([]);
     const [allCampaigns, setAllCampaigns] = useState<Campaign[]>([]);
     const [connectedMailboxes, setConnectedMailboxes] = useState<any[]>([]);
+    const [safetyStatus, setSafetyStatus] = useState<any | null>(null);
+    const [celeryHealth, setCeleryHealth] = useState<any | null>(null);
     const [loading, setLoading] = useState(true);
     const [userName, setUserName] = useState('');
     const [relinkingMailboxId, setRelinkingMailboxId] = useState<number | null>(null);
@@ -68,9 +70,11 @@ export default function DashboardPage() {
 
                 // Fetch everything in parallel
                 console.log('DEBUG: Fetching bulk data...');
-                const [mboxes, campaignList] = await Promise.all([
+                const [mboxes, campaignList, safety, celeryStatus] = await Promise.all([
                     mailboxes.list(storedToken, wsId),
-                    campaigns.list(storedToken, wsId)
+                    campaigns.list(storedToken, wsId),
+                    workspaces.safetyStatus(storedToken, wsId),
+                    health.celery()
                 ]);
 
                 console.log('DEBUG: Mailboxes loaded:', mboxes.length);
@@ -78,6 +82,8 @@ export default function DashboardPage() {
 
                 setConnectedMailboxes(mboxes);
                 setAllCampaigns(campaignList);
+                setSafetyStatus(safety);
+                setCeleryHealth(celeryStatus);
 
                 // Normalize status check
                 const getStatus = (c: any) => {
@@ -311,6 +317,67 @@ export default function DashboardPage() {
                     </div>
                 </div>
 
+                {celeryHealth?.status === 'no_workers' && (
+                    <div className="card" style={{ marginBottom: '24px', border: '1px solid rgba(255, 71, 87, 0.3)', background: 'rgba(255, 71, 87, 0.05)' }}>
+                        <div style={{ fontWeight: 600, marginBottom: '6px' }}>Background workers offline. Sending paused.</div>
+                        <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Check worker and beat services.</div>
+                    </div>
+                )}
+
+                {/* Safety & Deliverability */}
+                <div className="card" style={{ marginBottom: '32px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                        <h2 style={{ fontSize: '18px', fontWeight: '600' }}>Safety & Deliverability</h2>
+                        <span className={`badge badge-${safetyStatus?.workers_online ? 'success' : 'danger'}`}>
+                            {safetyStatus?.workers_online ? 'Workers Online' : 'Workers Offline'}
+                        </span>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
+                        <div>
+                            <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '8px' }}>Mailboxes</div>
+                            {safetyStatus?.mailboxes?.length ? (
+                                safetyStatus.mailboxes.map((mb: any) => (
+                                    <div key={mb.mailbox_id} style={{ padding: '8px 0', borderBottom: '1px solid var(--border-color)' }}>
+                                        <div style={{ fontWeight: 500 }}>{mb.email}</div>
+                                        <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                                            {mb.sent_today}/{mb.daily_limit} sent today
+                                            {mb.throttled && ' • throttled'}
+                                            {mb.paused && ' • paused'}
+                                        </div>
+                                        {mb.pause_reason && (
+                                            <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{mb.pause_reason}</div>
+                                        )}
+                                    </div>
+                                ))
+                            ) : (
+                                <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No mailboxes connected.</div>
+                            )}
+                        </div>
+
+                        <div>
+                            <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '8px' }}>Domains</div>
+                            {safetyStatus?.domains?.length ? (
+                                safetyStatus.domains.map((d: any, idx: number) => (
+                                    <div key={`${d.domain}-${idx}`} style={{ padding: '8px 0', borderBottom: '1px solid var(--border-color)' }}>
+                                        <div style={{ fontWeight: 500 }}>{d.domain}</div>
+                                        <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                                            SPF: {d.spf_valid ? 'OK' : 'Invalid'} • DMARC: {d.dmarc_valid ? 'OK' : 'Invalid'}
+                                        </div>
+                                        {d.warmup_day ? (
+                                            <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                                                Warmup day {d.warmup_day}{d.warmup_completed ? ' (completed)' : ''}
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                ))
+                            ) : (
+                                <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No domains checked.</div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+
                 {/* Active Campaigns */}
                 <div style={{ marginBottom: '32px' }}>
                     <div style={{
@@ -431,6 +498,7 @@ export default function DashboardPage() {
                     )}
                 </div>
 
+                
                 {/* Connected Mailboxes */}
                 <div>
                     <div style={{
@@ -465,70 +533,79 @@ export default function DashboardPage() {
                         </div>
                     ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                            {connectedMailboxes.map((mailbox: any) => (
-                                <div key={mailbox.id} className="card" style={{ padding: '16px' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                        <div style={{
-                                            width: '40px',
-                                            height: '40px',
-                                            borderRadius: '50%',
-                                            background: 'var(--bg-tertiary)',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                        }}>
-                                            📬
-                                        </div>
-                                        <div style={{ flex: 1 }}>
-                                            <div style={{ fontWeight: '500' }}>{mailbox.email}</div>
-                                            <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
-                                                Connected {new Date(mailbox.connected_at).toLocaleDateString()}
+                            {connectedMailboxes.map((mailbox: any) => {
+                                const mailboxStatus = (mailbox.status || (mailbox.is_active ? 'ACTIVE' : 'INACTIVE')).toUpperCase();
+                                const needsReconnect = mailboxStatus === 'REAUTH_REQUIRED' || mailbox.is_active === false;
+                                return (
+                                    <div key={mailbox.id} className="card" style={{ padding: '16px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                            <div style={{
+                                                width: '40px',
+                                                height: '40px',
+                                                borderRadius: '50%',
+                                                background: 'var(--bg-tertiary)',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                            }}>
+                                                Mail
                                             </div>
-                                        </div>
-                                        <span className={`badge badge-${mailbox.is_active ? 'success' : 'danger'}`}>
-                                            {mailbox.is_active ? 'Active' : 'Inactive'}
-                                        </span>
-                                        <div style={{ display: 'flex', gap: '8px' }}>
-                                            {!mailbox.is_active && (
+                                            <div style={{ flex: 1 }}>
+                                                <div style={{ fontWeight: '500' }}>{mailbox.email}</div>
+                                                <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                                                    Connected {new Date(mailbox.connected_at).toLocaleDateString()}
+                                                </div>
+                                                {mailbox.error_reason && (
+                                                    <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                                                        {mailbox.error_reason}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <span className={`badge badge-${mailboxStatus === 'ACTIVE' ? 'success' : 'danger'}`}>
+                                                {mailboxStatus}
+                                            </span>
+                                            <div style={{ display: 'flex', gap: '8px' }}>
+                                                {needsReconnect && (
+                                                    <button
+                                                        onClick={() => handleRelinkMailbox(mailbox.id)}
+                                                        disabled={relinkingMailboxId === mailbox.id}
+                                                        style={{
+                                                            background: 'rgba(33, 150, 243, 0.1)',
+                                                            border: '1px solid rgba(33, 150, 243, 0.2)',
+                                                            color: '#2196f3',
+                                                            padding: '6px 12px',
+                                                            borderRadius: '6px',
+                                                            fontSize: '12px',
+                                                            fontWeight: '600',
+                                                            cursor: relinkingMailboxId === mailbox.id ? 'not-allowed' : 'pointer',
+                                                            opacity: relinkingMailboxId === mailbox.id ? 0.6 : 1,
+                                                        }}
+                                                    >
+                                                        {relinkingMailboxId === mailbox.id ? 'Redirecting...' : 'Reconnect Gmail'}
+                                                    </button>
+                                                )}
                                                 <button
-                                                    onClick={() => handleRelinkMailbox(mailbox.id)}
-                                                    disabled={relinkingMailboxId === mailbox.id}
+                                                    onClick={() => handleDisconnectMailbox(mailbox.id, mailbox.email)}
+                                                    disabled={disconnectingMailboxId === mailbox.id}
                                                     style={{
-                                                        background: 'rgba(33, 150, 243, 0.1)',
-                                                        border: '1px solid rgba(33, 150, 243, 0.2)',
-                                                        color: '#2196f3',
+                                                        background: 'rgba(255, 71, 87, 0.1)',
+                                                        border: '1px solid rgba(255, 71, 87, 0.2)',
+                                                        color: '#ff4757',
                                                         padding: '6px 12px',
                                                         borderRadius: '6px',
                                                         fontSize: '12px',
                                                         fontWeight: '600',
-                                                        cursor: relinkingMailboxId === mailbox.id ? 'not-allowed' : 'pointer',
-                                                        opacity: relinkingMailboxId === mailbox.id ? 0.6 : 1,
+                                                        cursor: disconnectingMailboxId === mailbox.id ? 'not-allowed' : 'pointer',
+                                                        opacity: disconnectingMailboxId === mailbox.id ? 0.6 : 1,
                                                     }}
                                                 >
-                                                    {relinkingMailboxId === mailbox.id ? '🔄 Redirecting...' : '🔄 Re-link'}
+                                                    {disconnectingMailboxId === mailbox.id ? 'Disconnecting...' : 'Disconnect'}
                                                 </button>
-                                            )}
-                                            <button
-                                                onClick={() => handleDisconnectMailbox(mailbox.id, mailbox.email)}
-                                                disabled={disconnectingMailboxId === mailbox.id}
-                                                style={{
-                                                    background: 'rgba(255, 71, 87, 0.1)',
-                                                    border: '1px solid rgba(255, 71, 87, 0.2)',
-                                                    color: '#ff4757',
-                                                    padding: '6px 12px',
-                                                    borderRadius: '6px',
-                                                    fontSize: '12px',
-                                                    fontWeight: '600',
-                                                    cursor: disconnectingMailboxId === mailbox.id ? 'not-allowed' : 'pointer',
-                                                    opacity: disconnectingMailboxId === mailbox.id ? 0.6 : 1,
-                                                }}
-                                            >
-                                                {disconnectingMailboxId === mailbox.id ? '⏳' : '✕ Disconnect'}
-                                            </button>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     )}
                 </div>

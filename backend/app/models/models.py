@@ -3,7 +3,7 @@ SQLAlchemy models for the Email Outreach Platform.
 """
 from datetime import datetime
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, DateTime, 
+    Column, Integer, String, Text, Boolean, DateTime,
     ForeignKey, Date, JSON, Enum as SQLEnum, LargeBinary, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
@@ -35,8 +35,6 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
     
     
     # Relationships
@@ -62,13 +60,11 @@ class Workspace(Base):
     meeting_time_start = Column(String(10), nullable=True)  # "09:00"
     meeting_time_end = Column(String(10), nullable=True)  # "17:00"
     has_leads = Column(Boolean, default=False)
+    warmup_enabled = Column(Boolean, default=False)
+    warmup_start_date = Column(DateTime, nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    # Warm-up (new fields)
-    warmup_enabled = Column(Boolean, default=False, nullable=False)
-    warmup_start_date = Column(DateTime, nullable=True)
     
     
     # Relationships
@@ -100,6 +96,7 @@ class Mailbox(Base):
     
     # Fix B2: Mailbox status for OAuth handling
     status = Column(SQLEnum(MailboxStatus), default=MailboxStatus.ACTIVE)
+    error_reason = Column(Text, nullable=True)
     
     # Legacy field (kept for compatibility)
     is_active = Column(Boolean, default=True)
@@ -107,8 +104,6 @@ class Mailbox(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
     
     # Relationships
     workspace = relationship("Workspace", back_populates="mailboxes")
@@ -130,12 +125,10 @@ class Domain(Base):
     spf_record = Column(Text, nullable=True)
     dmarc_valid = Column(Boolean, nullable=True)
     dmarc_record = Column(Text, nullable=True)
-
-    # Warm-up Status
-    warmup_day = Column(Integer, default=0, nullable=False)
-    warmup_completed = Column(Boolean, default=False, nullable=False)
     
     last_checked_at = Column(DateTime, nullable=True)
+    warmup_day = Column(Integer, default=0)
+    warmup_completed = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -194,7 +187,6 @@ class Campaign(Base):
     followup_subject = Column(String(500), nullable=True)
     followup_body = Column(Text, nullable=True)
     max_followups = Column(Integer, default=2)
-    followup_templates = Column(JSON, nullable=True) # [{"step": 1, "subject": "...", "body": "..."}]
     
     # Safety (read-only, enforced by system)
     safety_level = Column(SQLEnum(SafetyLevel), default=SafetyLevel.MEDIUM)
@@ -202,8 +194,6 @@ class Campaign(Base):
     launched_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
     # Per-campaign customer info overrides
     customer_info = Column(JSON, nullable=True)
     
@@ -222,19 +212,17 @@ class CampaignLead(Base):
     lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False)
     
     status = Column(SQLEnum(CampaignLeadStatus), default=CampaignLeadStatus.PENDING)
-    
+
     # Scheduling
     next_action_at = Column(DateTime, nullable=True, index=True)
     followup_count = Column(Integer, default=0)
-
-    # Follow-up System (New)
     followup_state = Column(SQLEnum(FollowupState), default=FollowupState.SCHEDULED, nullable=False)
-    cancelled_at = Column(DateTime, nullable=True)
-    cancel_reason = Column(SQLEnum(CancelReason), nullable=True)
-    cancel_detail = Column(Text, nullable=True)
     current_step = Column(Integer, default=0, nullable=False)
     next_scheduled_at = Column(DateTime, nullable=True, index=True)
     schedule_json = Column(JSON, nullable=True)
+    cancel_reason = Column(SQLEnum(CancelReason), nullable=True)
+    cancel_detail = Column(Text, nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
     
     # Fix D3: Retry safety
     retry_count = Column(Integer, default=0)
@@ -246,8 +234,6 @@ class CampaignLead(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
     
     # Relationships
     campaign = relationship("Campaign", back_populates="campaign_leads")
@@ -279,26 +265,41 @@ class Message(Base):
     # Content
     subject = Column(String(500), nullable=True)
     body = Column(Text, nullable=True)
-
-    # Sending & Cancellation
-    planned_send_at = Column(DateTime, nullable=True)
-    cancelled = Column(Boolean, default=False, nullable=False)
-    cancel_reason = Column(String(255), nullable=True)
-    
-    # Drafts
-    is_draft = Column(Boolean, default=False, nullable=False)
-    draft_status = Column(SQLEnum(DraftStatus), nullable=True)
     
     # For inbound messages
     classification = Column(SQLEnum(ReplyClassification), nullable=True)
-    
+
     sent_at = Column(DateTime, nullable=True)
     received_at = Column(DateTime, nullable=True)
+    planned_send_at = Column(DateTime, nullable=True)
+    cancelled = Column(Boolean, default=False)
+    cancel_reason = Column(String(255), nullable=True)
+    is_draft = Column(Boolean, default=False)
+    draft_status = Column(SQLEnum(DraftStatus), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
     campaign_lead = relationship("CampaignLead", back_populates="messages")
 
+
+class ReplyDraft(Base):
+    """AI-generated reply drafts stored for human review."""
+    __tablename__ = "reply_drafts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False)
+    mailbox_id = Column(Integer, ForeignKey("mailboxes.id"), nullable=False)
+    gmail_thread_id = Column(String(255), nullable=False, index=True)
+    gmail_message_id = Column(String(255), nullable=True)
+    subject = Column(Text, nullable=True)
+    body = Column(Text, nullable=True)
+    model = Column(String(100), nullable=False)
+    prompt_version = Column(String(100), nullable=False)
+    status = Column(SQLEnum(DraftStatus), default=DraftStatus.GENERATED, nullable=False)
+    risk_flags = Column(JSON, nullable=True)
+    classification = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class Event(Base):
     """Audit log for all actions."""
@@ -359,8 +360,6 @@ class RiskSnapshot(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
     
     # Relationships
     domain = relationship("Domain", back_populates="risk_snapshots")
@@ -374,46 +373,16 @@ class BookingEvent(Base):
     __tablename__ = "booking_events"
     
     id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False)
-    
+    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=True)
+    mailbox_id = Column(Integer, ForeignKey("mailboxes.id"), nullable=True)
+
     # Unique identifier from Calendly
-    calendly_event_uuid = Column(String(255), unique=True, nullable=False, index=True)
-    
+    calendly_event_uuid = Column(Text, unique=True, nullable=False, index=True)
+
     # Event details
-    event_type = Column(String(100), nullable=False)  # invitee.created, invitee.canceled
+    event_type = Column(String(100), nullable=True)
     invitee_email = Column(String(255), nullable=True)
-    event_start_time = Column(DateTime, nullable=True)
-    
-    # Payload hash for verification
-    payload_hash = Column(String(64), nullable=True)
-    
+    payload = Column(JSON, nullable=True)
+
     # Tracking
-    processed_at = Column(DateTime, default=datetime.utcnow)
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-
-class ReplyDraft(Base):
-    """AI Generated Reply Drafts."""
-    __tablename__ = "reply_drafts"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False)
-    mailbox_id = Column(Integer, ForeignKey("mailboxes.id"), nullable=False)
-    
-    gmail_thread_id = Column(String(255), nullable=False, index=True)
-    gmail_message_id = Column(String(255), nullable=True)  # The message being replied to
-    
-    subject = Column(Text, nullable=True)
-    body = Column(Text, nullable=True)
-    
-    model = Column(String(100), nullable=False)
-    prompt_version = Column(String(100), nullable=False)
-    
-    status = Column(SQLEnum(DraftStatus), default=DraftStatus.GENERATED, nullable=False)
-    
-    risk_flags = Column(JSON, nullable=True)
-    classification = Column(String(100), nullable=True)
-    
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
+    received_at = Column(DateTime, default=datetime.utcnow)

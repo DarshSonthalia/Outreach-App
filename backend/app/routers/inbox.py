@@ -9,7 +9,7 @@ import re
 from app.database import get_db
 from app.models import (
     User, Workspace, Campaign, CampaignLead, Message, Lead,
-    MessageDirection, SuppressionReason, Mailbox
+    MessageDirection, SuppressionReason, Mailbox, BookingEvent
 )
 from app.schemas import ReplyResponse, ClassifyRequest, SendReplyRequest
 from app.utils.dependencies import get_current_user
@@ -41,9 +41,33 @@ def clean_message_body(body: str) -> str:
     if match:
         # Return only the part before the quoted message
         cleaned = body[:match.start()].strip()
-        return cleaned
+        if cleaned:
+            return cleaned
+        # If the reply starts with quoted text, fall back to raw body
+        return body.strip()
     
     return body.strip()
+
+
+def _strip_html(body: str) -> str:
+    import re
+    text = re.sub(r"<(script|style)[^>]*>.*?</\\1>", " ", body, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\\s+", " ", text).strip()
+    return text
+
+
+def normalize_message_body(body: str, is_inbound: bool) -> str:
+    raw = body or ""
+    stripped = ""
+    if "<" in raw and ">" in raw:
+        stripped = _strip_html(raw)
+    base = stripped or raw
+    if is_inbound:
+        cleaned = clean_message_body(base)
+        if cleaned:
+            return cleaned
+    return base.strip()
 
 
 @router.get("/replies", response_model=List[ReplyResponse])
@@ -95,10 +119,10 @@ async def list_replies(
     # This shows one item per conversation
     result = []
     for cl_id in campaign_lead_ids:
-        # Get the latest message for this conversation
-        # Try received_at first (for inbound), then sent_at (for outbound)
+        # Only show inbound replies in the inbox list.
         latest_msg = db.query(Message).filter(
-            Message.campaign_lead_id == cl_id
+            Message.campaign_lead_id == cl_id,
+            Message.direction == MessageDirection.INBOUND
         ).order_by(
             Message.received_at.desc().nullslast(),
             Message.sent_at.desc().nullslast(),
@@ -117,10 +141,26 @@ async def list_replies(
             campaign = campaign_lead.campaign
             
             # Only clean body for inbound messages (replies)
-            if latest_msg.direction == MessageDirection.INBOUND:
-                cleaned_body = clean_message_body(latest_msg.body)
-            else:
-                cleaned_body = latest_msg.body
+            cleaned_body = normalize_message_body(
+                latest_msg.body or "",
+                latest_msg.direction == MessageDirection.INBOUND
+            )
+
+            if not cleaned_body:
+                fallback_msg = db.query(Message).filter(
+                    Message.campaign_lead_id == cl_id,
+                    Message.body.isnot(None),
+                    Message.body != ""
+                ).order_by(
+                    Message.received_at.desc().nullslast(),
+                    Message.sent_at.desc().nullslast(),
+                    Message.id.desc()
+                ).first()
+                if fallback_msg:
+                    cleaned_body = normalize_message_body(
+                        fallback_msg.body or "",
+                        fallback_msg.direction == MessageDirection.INBOUND
+                    )
             
             result.append(ReplyResponse(
                 id=latest_msg.id,
@@ -189,8 +229,9 @@ async def classify_reply(
     db.commit()
     db.refresh(reply)
     
-    lead = reply.campaign_lead.lead
-    campaign = reply.campaign_lead.campaign
+    campaign_lead = reply.campaign_lead
+    lead = campaign_lead.lead
+    campaign = campaign_lead.campaign
     return ReplyResponse(
         id=reply.id,
         lead_email=lead.email,
@@ -224,21 +265,37 @@ async def get_reply(
             detail="Reply not found"
         )
     
-    lead = reply.campaign_lead.lead
-    campaign = reply.campaign_lead.campaign
+    campaign_lead = reply.campaign_lead
+    lead = campaign_lead.lead
+    campaign = campaign_lead.campaign
     
     # Get all messages in the same thread, sorted newest first
-    thread_messages = db.query(Message).filter(
-        Message.gmail_thread_id == reply.gmail_thread_id
-    ).order_by(Message.received_at.desc(), Message.sent_at.desc()).all()
+    thread_query = db.query(Message)
+    if reply.gmail_thread_id:
+        thread_query = thread_query.filter(Message.gmail_thread_id == reply.gmail_thread_id)
+    else:
+        thread_query = thread_query.filter(Message.campaign_lead_id == reply.campaign_lead_id)
+
+    thread_messages = thread_query.order_by(
+        Message.received_at.desc(),
+        Message.sent_at.desc()
+    ).all()
+
+    if not thread_messages:
+        thread_messages = db.query(Message).filter(
+            Message.campaign_lead_id == reply.campaign_lead_id
+        ).order_by(
+            Message.received_at.desc(),
+            Message.sent_at.desc()
+        ).all()
     
     messages_data = []
     for msg in thread_messages:
         # Clean body for inbound messages only
-        if msg.direction == MessageDirection.INBOUND:
-            msg_body = clean_message_body(msg.body)
-        else:
-            msg_body = msg.body
+        msg_body = normalize_message_body(
+            msg.body or "",
+            msg.direction == MessageDirection.INBOUND
+        )
         
         messages_data.append({
             "id": msg.id,
@@ -269,12 +326,23 @@ async def get_reply(
             "name": campaign.name,
         },
         "subject": reply.subject,
-        "body": reply.body,
+        "body": normalize_message_body(reply.body or "", True),
         "classification": reply.classification,
         "classification_explanation": explanation,
         "received_at": reply.received_at,
         "gmail_thread_id": reply.gmail_thread_id,
-        "thread": messages_data
+        "thread": messages_data,
+        "campaign_lead": {
+            "id": campaign_lead.id,
+            "followup_state": campaign_lead.followup_state.value if campaign_lead.followup_state else None,
+            "cancel_reason": campaign_lead.cancel_reason.value if campaign_lead.cancel_reason else None,
+            "cancel_detail": campaign_lead.cancel_detail,
+            "cancelled_at": campaign_lead.cancelled_at
+        },
+        "booking_confirmed": db.query(BookingEvent).filter(
+            BookingEvent.invitee_email == lead.email,
+            BookingEvent.event_type == "invitee.created"
+        ).count() > 0
     }
 
 
@@ -442,11 +510,16 @@ async def generate_ai_draft(
         content = clean_message_body(msg.body) if msg.direction == MessageDirection.INBOUND else msg.body
         history_text += f"{sender}: {content}\n\n"
         
+    campaign_body = campaign.body or ""
+    campaign_context = f"Goal: {campaign.name}."
+    if campaign_body:
+        campaign_context = f"{campaign_context} Body sample: {campaign_body[:200]}..."
+
     context = {
         "lead_name": f"{lead.first_name} {lead.last_name}".strip(),
         "lead_company": lead.company,
         "lead_email": lead.email,
-        "campaign_context": f"Goal: {campaign.name}. Body sample: {campaign.body[:200]}...",
+        "campaign_context": campaign_context,
         "conversation_history": history_text,
         "last_reply": latest_msg.body
     }
@@ -456,7 +529,14 @@ async def generate_ai_draft(
         draft_json = AIService.generate_reply_draft(context)
     except Exception as e:
         logger.error(f"AI Generation failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        subject = latest_msg.subject or "Quick question"
+        draft_json = {
+            "classification": "NEUTRAL",
+            "subject": f"Re: {subject}",
+            "body": "Thanks for the note. Would you be open to a quick chat so I can better understand your needs?",
+            "needs_human_review": True,
+            "risk_flags": ["AI_GENERATION_FAILED"]
+        }
         
     # 4. Save to DB (reply_drafts)
     new_draft = ReplyDraft(
@@ -545,53 +625,53 @@ async def send_draft(
         
     # Send
     # Fetch lead email to send to
-        try:
-            # Find original message to identify lead
-            original_msg = db.query(Message).filter(Message.gmail_message_id == draft.gmail_message_id).first()
-            if not original_msg:
-                # Fallback to thread
-                original_msg = db.query(Message).filter(Message.gmail_thread_id == draft.gmail_thread_id).first()
+    try:
+        # Find original message to identify lead
+        original_msg = db.query(Message).filter(Message.gmail_message_id == draft.gmail_message_id).first()
+        if not original_msg:
+            # Fallback to thread
+            original_msg = db.query(Message).filter(Message.gmail_thread_id == draft.gmail_thread_id).first()
+        
+        if not original_msg or not original_msg.campaign_lead:
+            raise ValueError("Could not find lead associated with this draft")
             
-            if not original_msg or not original_msg.campaign_lead:
-                raise ValueError("Could not find lead associated with this draft")
-                
-            lead_email = original_msg.campaign_lead.lead.email
-            campaign_lead = original_msg.campaign_lead
-            
-            credentials = GmailService.get_credentials_from_encrypted(
-                 mailbox.access_token_encrypted,
-                 mailbox.refresh_token_encrypted,
-                 mailbox.token_expiry
-            )
-            
-            gmail_msg_id, gmail_thread_id = GmailService.send_email(
-                credentials=credentials,
-                to_email=lead_email,
-                subject=draft.subject,
-                body=draft.body,
-                reply_to_thread_id=draft.gmail_thread_id,
-                reply_to_message_id=draft.gmail_message_id
-            )
-            
-            # Record outbound
-            new_msg = Message(
-                 campaign_lead_id=campaign_lead.id,
-                 direction=MessageDirection.OUTBOUND,
-                 step_number=-99, # Manual/Draft reply
-                 gmail_message_id=gmail_msg_id,
-                 gmail_thread_id=gmail_thread_id,
-                 subject=draft.subject,
-                 body=draft.body,
-                 sent_at=datetime.utcnow(),
-                 is_draft=False
-            )
-            db.add(new_msg)
-            
-            draft.status = DraftStatus.SENT
-            db.commit()
-            
-            return {"status": "success", "message_id": gmail_msg_id}
-            
-        except Exception as e:
-            logger.error(f"Send draft failed: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        lead_email = original_msg.campaign_lead.lead.email
+        campaign_lead = original_msg.campaign_lead
+        
+        credentials = GmailService.get_credentials_from_encrypted(
+             mailbox.access_token_encrypted,
+             mailbox.refresh_token_encrypted,
+             mailbox.token_expiry
+        )
+        
+        gmail_msg_id, gmail_thread_id = GmailService.send_email(
+            credentials=credentials,
+            to_email=lead_email,
+            subject=draft.subject,
+            body=draft.body,
+            reply_to_thread_id=draft.gmail_thread_id,
+            reply_to_message_id=draft.gmail_message_id
+        )
+        
+        # Record outbound
+        new_msg = Message(
+             campaign_lead_id=campaign_lead.id,
+             direction=MessageDirection.OUTBOUND,
+             step_number=-99, # Manual/Draft reply
+             gmail_message_id=gmail_msg_id,
+             gmail_thread_id=gmail_thread_id,
+             subject=draft.subject,
+             body=draft.body,
+             sent_at=datetime.utcnow(),
+             is_draft=False
+        )
+        db.add(new_msg)
+        
+        draft.status = DraftStatus.SENT
+        db.commit()
+        
+        return {"status": "success", "message_id": gmail_msg_id}
+        
+    except Exception as e:
+        logger.error(f"Send draft failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

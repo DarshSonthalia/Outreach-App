@@ -20,8 +20,9 @@ from app.models import (
     CampaignStatus, CampaignLeadStatus, MessageDirection
 )
 from app.enums import FollowupState, CancelReason
-from app.services.gmail_service import GmailService
+from app.services.gmail_service import GmailService, RateLimitError
 from app.services.safety_service import SafetyService
+from app.services.followup_service import FollowupService
 from app.services.warmup_service import WarmupService
 
 logger = logging.getLogger(__name__)
@@ -183,6 +184,16 @@ def process_single_send(db: Session, campaign_lead: CampaignLead):
     
     if not safety_decision.can_send:
         logger.warning(f"Safety check failed: {safety_decision.reason}")
+        if safety_decision.reason in ["suppressed", "already_replied"]:
+            reason = CancelReason.SUPPRESSED if safety_decision.reason == "suppressed" else CancelReason.REPLIED
+            FollowupService.cancel_followups(
+                db,
+                campaign_lead.id,
+                reason,
+                safety_decision.explanation
+            )
+            campaign_lead.status = CampaignLeadStatus.PENDING
+            return
         # Delay (reschedule)
         # We update next_scheduled_at but keep state SCHEDULED
         delay_sec = safety_decision.delay_seconds or 3600
@@ -210,6 +221,7 @@ def process_single_send(db: Session, campaign_lead: CampaignLead):
         return
 
     # Content generation
+    followup_templates = getattr(campaign, "followup_templates", None)
     is_followup = step_number > 0
     subject = campaign.subject
     body = campaign.body
@@ -217,8 +229,8 @@ def process_single_send(db: Session, campaign_lead: CampaignLead):
     if is_followup:
         # Try to find template in followup_templates
         template = None
-        if campaign.followup_templates:
-            for t in campaign.followup_templates:
+        if followup_templates:
+            for t in followup_templates:
                 if t.get("step") == step_number:
                     template = t
                     break
@@ -298,25 +310,30 @@ def process_single_send(db: Session, campaign_lead: CampaignLead):
             campaign_lead.schedule_json = []
             
             # Step 0
+            body_full = campaign.body or ""
             campaign_lead.schedule_json.append({
                 "step": 0,
                 "planned_at": None,
                 "subject": campaign.subject,
-                "body_preview": (campaign.body[:100] + "...") if campaign.body else "",
+                "body": body_full,
+                "body_preview": (body_full[:100] + "...") if body_full else "",
                 "status": "SENT" if step_number > 0 else "PENDING"
             })
             
             # Follow-ups (reconstruct planned steps)
             for i in range(1, campaign.max_followups + 1):
-                body_prev = "Follow-up email"
-                if campaign.followup_templates and len(campaign.followup_templates) >= i:
-                    tmpl = campaign.followup_templates[i-1]
-                    body_prev = (tmpl.get("body", "")[:100] + "...") if tmpl.get("body") else "Follow-up email"
+                body_full = campaign.followup_body or ""
+                body_prev = (body_full[:100] + "...") if body_full else "Follow-up email"
+                if followup_templates and len(followup_templates) >= i:
+                    tmpl = followup_templates[i-1]
+                    body_full = tmpl.get("body", "") or body_full
+                    body_prev = (body_full[:100] + "...") if body_full else "Follow-up email"
                 
                 campaign_lead.schedule_json.append({
                     "step": i,
                     "planned_at": (campaign_lead.next_scheduled_at.isoformat() if i == step_number else None),
                     "subject": f"Re: {campaign.subject}",
+                    "body": body_full,
                     "body_preview": body_prev,
                     "status": "SENT" if step_number > i else "PLANNED"
                 })
@@ -332,7 +349,18 @@ def process_single_send(db: Session, campaign_lead: CampaignLead):
         campaign_lead.schedule_json = new_schedule
         
         advance_to_next_step(db, campaign_lead, campaign)
-        
+
+    except RateLimitError as e:
+        logger.warning(f"Rate limited by Gmail API: {e}")
+        campaign_lead.next_scheduled_at = datetime.utcnow() + timedelta(minutes=10)
+        campaign_lead.status = CampaignLeadStatus.PENDING
+        db.add(Event(
+            entity_type="campaign_lead",
+            entity_id=campaign_lead.id,
+            action="SEND_DELAYED_RATE_LIMIT",
+            details={"error": str(e)},
+            explanation="Gmail rate limit hit. Send delayed."
+        ))
     except Exception as e:
         logger.error(f"Send failed: {e}")
         handle_send_failure(db, campaign_lead, str(e))
@@ -396,7 +424,7 @@ def handle_send_failure(db: Session, campaign_lead: CampaignLead, error: str):
     if campaign_lead.retry_count >= MAX_RETRIES:
         # Max retries exceeded, mark as failed
         campaign_lead.status = CampaignLeadStatus.COMPLETED
-        campaign_lead.next_action_at = None
+        campaign_lead.next_scheduled_at = None
         
         event = Event(
             entity_type="campaign_lead",
@@ -412,5 +440,5 @@ def handle_send_failure(db: Session, campaign_lead: CampaignLead, error: str):
         delay = RETRY_DELAY_MINUTES * (2 ** (campaign_lead.retry_count - 1))
         campaign_lead.status = CampaignLeadStatus.PENDING
         campaign_lead.next_retry_at = datetime.utcnow() + timedelta(minutes=delay)
-        campaign_lead.next_action_at = campaign_lead.next_retry_at
+        campaign_lead.next_scheduled_at = campaign_lead.next_retry_at
         logger.info(f"Retry scheduled in {delay} minutes")

@@ -32,12 +32,57 @@ const classificationLabels: Record<string, string> = {
     unknown: '❓ Unknown',
 };
 
+type MessagePart = { text: string; isQuoted: boolean };
+
+const splitMessageBody = (body?: string): MessagePart[] => {
+    if (!body) {
+        return [];
+    }
+    const raw = body.replace(/\r\n/g, "\n").trim();
+    if (!raw) {
+        return [];
+    }
+
+    const markerRegex = /\nOn .+wrote:\n/i;
+    const markerIndex = raw.search(markerRegex);
+    if (markerIndex >= 0) {
+        const before = raw.slice(0, markerIndex).trim();
+        const quoted = raw.slice(markerIndex + 1).trim();
+        const parts: MessagePart[] = [];
+        if (before) {
+            parts.push({ text: before, isQuoted: false });
+        }
+        if (quoted) {
+            parts.push({ text: quoted, isQuoted: true });
+        }
+        return parts;
+    }
+
+    const lines = raw.split("\n");
+    const firstQuoted = lines.findIndex((line) => line.trim().startsWith(">"));
+    if (firstQuoted >= 0) {
+        const before = lines.slice(0, firstQuoted).join("\n").trim();
+        const quoted = lines.slice(firstQuoted).join("\n").trim();
+        const parts: MessagePart[] = [];
+        if (before) {
+            parts.push({ text: before, isQuoted: false });
+        }
+        if (quoted) {
+            parts.push({ text: quoted, isQuoted: true });
+        }
+        return parts;
+    }
+
+    return [{ text: raw, isQuoted: false }];
+};
+
 export default function InboxPage() {
     const router = useRouter();
     const [token, setToken] = useState<string | null>(null);
     const [workspaceId, setWorkspaceId] = useState<number | null>(null);
     const [replies, setReplies] = useState<Reply[]>([]);
     const [selectedReply, setSelectedReply] = useState<any | null>(null);
+    const [replyDetails, setReplyDetails] = useState<any | null>(null);
     const [thread, setThread] = useState<any[]>([]);
     const [replyBody, setReplyBody] = useState('');
     const [sending, setSending] = useState(false);
@@ -91,9 +136,11 @@ export default function InboxPage() {
             try {
                 const fullReply = await inbox.getReply(t, reply.id);
                 setThread(fullReply.thread || []);
+                setReplyDetails(fullReply);
             } catch (err) {
                 console.error('Error fetching thread:', err);
                 setThread([]);
+                setReplyDetails(null);
             }
         };
 
@@ -107,10 +154,12 @@ export default function InboxPage() {
         try {
             const fullReply = await inbox.getReply(token, reply.id);
             setThread(fullReply.thread || []);
+            setReplyDetails(fullReply);
             setReplyBody(''); // Reset reply body when switching
         } catch (err) {
             console.error('Error fetching thread:', err);
             setThread([]);
+            setReplyDetails(null);
         }
     };
 
@@ -139,6 +188,7 @@ export default function InboxPage() {
             // Re-fetch thread to show new message
             const fullReply = await inbox.getReply(token, selectedReply.id);
             setThread(fullReply.thread || []);
+            setReplyDetails(fullReply);
             setReplyBody('');
             setActiveDraft(null); // Clear draft after sending manual reply too?
         } catch (err: any) {
@@ -207,6 +257,7 @@ export default function InboxPage() {
             // Refresh
             const fullReply = await inbox.getReply(token, selectedReply.id);
             setThread(fullReply.thread || []);
+            setReplyDetails(fullReply);
             setReplyBody('');
             setActiveDraft(null);
             setIsEditingDraft(false);
@@ -368,8 +419,11 @@ export default function InboxPage() {
                             }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                                     <div>
-                                        <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '8px' }}>
+                                        <h2 style={{ fontSize: '20px', fontWeight: '600', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                                             {selectedReply.subject || '(no subject)'}
+                                            {replyDetails?.booking_confirmed && (
+                                                <span className="badge badge-success">Meeting booked</span>
+                                            )}
                                         </h2>
                                         <div style={{ display: 'flex', gap: '16px', color: 'var(--text-secondary)', fontSize: '14px' }}>
                                             <span>With: {selectedReply.lead_email}</span>
@@ -399,6 +453,21 @@ export default function InboxPage() {
                                 </div>
                             </div>
 
+                            {replyDetails?.campaign_lead?.followup_state && ['CANCELLED', 'COMPLETED'].includes(replyDetails.campaign_lead.followup_state) && (
+                                <div style={{
+                                    margin: '16px 24px 0',
+                                    padding: '12px 16px',
+                                    borderRadius: '8px',
+                                    border: '1px solid rgba(255, 71, 87, 0.25)',
+                                    background: 'rgba(255, 71, 87, 0.08)',
+                                    fontSize: '13px'
+                                }}>
+                                    Follow-ups cancelled: {replyDetails.campaign_lead.cancel_reason || 'Unknown'}
+                                    {replyDetails.campaign_lead.cancel_detail ? ` — ${replyDetails.campaign_lead.cancel_detail}` : ''}
+                                    {replyDetails.campaign_lead.cancelled_at ? ` (${new Date(replyDetails.campaign_lead.cancelled_at).toLocaleString()})` : ''}
+                                </div>
+                            )}
+
                             {/* Thread View */}
                             <div style={{
                                 flex: 1,
@@ -409,35 +478,59 @@ export default function InboxPage() {
                                 gap: '20px',
                                 background: 'var(--bg-primary)'
                             }}>
-                                {thread.map((msg: any) => (
+                                {(() => {
+                                    const threadMessages = (thread.length > 0 ? thread : (replyDetails?.body || selectedReply?.body ? [{
+                                    id: `fallback-${selectedReply?.id || 'reply'}`,
+                                    direction: 'INBOUND',
+                                    body: replyDetails?.body || selectedReply?.body,
+                                    received_at: replyDetails?.received_at || selectedReply?.received_at,
+                                    sent_at: null,
+                                }] : [])).slice();
+                                    threadMessages.sort((a: any, b: any) => {
+                                        const aTime = new Date(a.sent_at || a.received_at || 0).getTime();
+                                        const bTime = new Date(b.sent_at || b.received_at || 0).getTime();
+                                        return aTime - bTime;
+                                    });
+                                    return threadMessages.map((msg: any) => {
+                                    const direction = (msg.direction || '').toLowerCase();
+                                    const parts = splitMessageBody(msg.body);
+                                    const renderedParts = parts.filter((part) => !part.isQuoted);
+                                    if (renderedParts.length == 0) {
+                                        return null;
+                                    }
+                                    return renderedParts.map((part, index) => (
                                     <div
-                                        key={msg.id}
+                                        key={`${msg.id}-${index}`}
                                         style={{
-                                            alignSelf: msg.direction === 'outbound' ? 'flex-end' : 'flex-start',
+                                            alignSelf: direction === 'outbound' ? 'flex-end' : 'flex-start',
                                             maxWidth: '80%',
                                         }}
                                     >
+                                        {index === 0 && (
+                                            <div style={{
+                                                fontSize: '12px',
+                                                color: 'var(--text-muted)',
+                                                marginBottom: '4px',
+                                                textAlign: direction === 'outbound' ? 'right' : 'left'
+                                            }}>
+                                                {direction === 'outbound' ? 'You' : (selectedReply.lead_name || selectedReply.lead_email)} - {new Date(msg.sent_at || msg.received_at).toLocaleString()}
+                                            </div>
+                                        )}
                                         <div style={{
-                                            fontSize: '12px',
-                                            color: 'var(--text-muted)',
-                                            marginBottom: '4px',
-                                            textAlign: msg.direction === 'outbound' ? 'right' : 'left'
-                                        }}>
-                                            {msg.direction === 'outbound' ? 'You' : (selectedReply.lead_name || selectedReply.lead_email)} • {new Date(msg.sent_at || msg.received_at).toLocaleString()}
-                                        </div>
-                                        <div style={{
-                                            background: msg.direction === 'outbound' ? 'var(--bg-tertiary)' : 'var(--bg-card)',
+                                            background: part.isQuoted ? 'var(--bg-secondary)' : (direction === 'outbound' ? 'var(--bg-tertiary)' : 'var(--bg-card)'),
                                             padding: '16px',
                                             borderRadius: '12px',
-                                            border: '1px solid var(--border-color)',
-                                            fontSize: '14px',
+                                            border: part.isQuoted ? '1px dashed var(--border-color)' : '1px solid var(--border-color)',
+                                            fontSize: part.isQuoted ? '13px' : '14px',
                                             lineHeight: '1.6',
                                             whiteSpace: 'pre-wrap',
                                         }}>
-                                            {msg.body}
+                                            {part.text}
                                         </div>
                                     </div>
-                                ))}
+                                    ));
+                                });
+                                })()}
                             </div>
 
                             {/* Reply Input Area */}

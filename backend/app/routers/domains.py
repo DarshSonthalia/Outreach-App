@@ -14,6 +14,15 @@ from app.services.domain_service import DomainService
 router = APIRouter()
 
 
+def _build_recommendations(domain: Domain) -> list[str]:
+    recommendations = []
+    if domain.spf_valid is False:
+        recommendations.append("Add a valid SPF record (v=spf1 ...) for your sending domain.")
+    if domain.dmarc_valid is False:
+        recommendations.append("Add a DMARC record at _dmarc.<domain> to protect deliverability.")
+    return recommendations
+
+
 @router.post("/check")
 async def check_domain(
     request: DomainCheckRequest,
@@ -72,7 +81,8 @@ async def check_domain(
     
     return {
         "domain": domain,
-        "health": health
+        "health": health,
+        "recommendations": _build_recommendations(domain)
     }
 
 
@@ -96,4 +106,13 @@ async def get_domain(
             detail="Domain not found"
         )
     
-    return domain
+    return DomainResponse(
+        id=domain.id,
+        domain=domain.domain,
+        spf_valid=domain.spf_valid,
+        spf_record=domain.spf_record,
+        dmarc_valid=domain.dmarc_valid,
+        dmarc_record=domain.dmarc_record,
+        last_checked_at=domain.last_checked_at,
+        recommendations=_build_recommendations(domain)
+    )

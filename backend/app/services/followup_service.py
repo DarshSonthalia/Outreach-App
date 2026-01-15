@@ -123,7 +123,7 @@ class FollowupService:
             elif inbound_message.classification == ReplyClassification.NEGATIVE:
                 reason = CancelReason.NEGATIVE_REPLY
             elif inbound_message.classification == ReplyClassification.BOOKING_INTENT:
-                reason = CancelReason.BOOKING_INTENT
+                reason = CancelReason.BOOKED
             
             detail = f"Received reply classified as {inbound_message.classification}"
             

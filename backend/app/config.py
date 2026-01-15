@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     # URLs
     frontend_url: str = "http://localhost:3000"
     backend_url: str = "http://localhost:8000"
+    app_public_base_url: str = "http://localhost:8000"
     
     # Calendly
     calendly_webhook_secret: str = ""
