@@ -153,6 +153,27 @@ export const leads = {
             return res.json();
         });
     },
+
+    leadgenSearch: (token: string, workspaceId: number, query: string, location?: string, desiredCount?: number) =>
+        apiRequest<any>(`/api/leads/leadgen/search?workspace_id=${workspaceId}`, {
+            method: 'POST',
+            body: { query, location, desired_count: desiredCount },
+            token,
+        }),
+
+    leadgenImport: (token: string, workspaceId: number, leads: any[]) =>
+        apiRequest<any[]>(`/api/leads/leadgen/import?workspace_id=${workspaceId}`, {
+            method: 'POST',
+            body: { leads },
+            token,
+        }),
+
+    leadgenEnrich: (token: string, workspaceId: number, company: string, website: string) =>
+        apiRequest<any[]>(`/api/leads/leadgen/enrich?workspace_id=${workspaceId}`, {
+            method: 'POST',
+            body: { company, website },
+            token,
+        }),
 };
 
 // Campaigns

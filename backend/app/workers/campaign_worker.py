@@ -24,6 +24,7 @@ from app.services.gmail_service import GmailService, RateLimitError
 from app.services.safety_service import SafetyService
 from app.services.followup_service import FollowupService
 from app.services.warmup_service import WarmupService
+from app.utils.email import build_reply_subject
 
 logger = logging.getLogger(__name__)
 
@@ -253,14 +254,32 @@ def process_single_send(db: Session, campaign_lead: CampaignLead):
 
     # Threading
     thread_id = None
+    reply_message_id = None
+    thread_subject = None
     if is_followup:
-        prev_message = db.query(Message).filter(
+        base_message = db.query(Message).filter(
             Message.campaign_lead_id == campaign_lead.id,
             Message.direction == MessageDirection.OUTBOUND,
+            Message.step_number == 0,
             Message.is_draft == False
-        ).order_by(Message.sent_at.desc()).first()
-        if prev_message:
-            thread_id = prev_message.gmail_thread_id
+        ).order_by(Message.sent_at.asc()).first()
+        if base_message:
+            thread_id = base_message.gmail_thread_id
+            reply_message_id = base_message.gmail_message_id
+            thread_subject = base_message.subject
+
+        if not thread_id or not reply_message_id or not thread_subject:
+            last_outbound = db.query(Message).filter(
+                Message.campaign_lead_id == campaign_lead.id,
+                Message.direction == MessageDirection.OUTBOUND,
+                Message.is_draft == False
+            ).order_by(Message.sent_at.desc()).first()
+            if last_outbound:
+                thread_id = thread_id or last_outbound.gmail_thread_id
+                reply_message_id = reply_message_id or last_outbound.gmail_message_id
+                thread_subject = thread_subject or last_outbound.subject
+
+        subject = build_reply_subject(thread_subject, fallback_subject=subject)
 
     # Send
     try:
@@ -269,7 +288,8 @@ def process_single_send(db: Session, campaign_lead: CampaignLead):
             lead.email,
             subject,
             body,
-            reply_to_thread_id=thread_id
+            reply_to_thread_id=thread_id,
+            reply_to_message_id=reply_message_id
         )
         
         # Create Message
@@ -345,6 +365,7 @@ def process_single_send(db: Session, campaign_lead: CampaignLead):
                 item["status"] = "SENT"
                 item["message_id"] = message_id
                 item["sent_at"] = datetime.utcnow().isoformat()
+                item["subject"] = subject
             new_schedule.append(item)
         campaign_lead.schedule_json = new_schedule
         

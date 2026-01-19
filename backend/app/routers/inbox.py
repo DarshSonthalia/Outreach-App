@@ -16,6 +16,7 @@ from app.utils.dependencies import get_current_user
 from app.services.safety_service import SafetyService
 from app.services.classification_service import ClassificationService
 from app.services.gmail_service import GmailService
+from app.utils.email import build_reply_subject
 from datetime import datetime
 
 router = APIRouter()
@@ -637,6 +638,9 @@ async def send_draft(
             
         lead_email = original_msg.campaign_lead.lead.email
         campaign_lead = original_msg.campaign_lead
+        subject = build_reply_subject(original_msg.subject, fallback_subject=draft.subject)
+        reply_to_thread_id = draft.gmail_thread_id or original_msg.gmail_thread_id
+        reply_to_message_id = draft.gmail_message_id or original_msg.gmail_message_id
         
         credentials = GmailService.get_credentials_from_encrypted(
              mailbox.access_token_encrypted,
@@ -647,20 +651,30 @@ async def send_draft(
         gmail_msg_id, gmail_thread_id = GmailService.send_email(
             credentials=credentials,
             to_email=lead_email,
-            subject=draft.subject,
+            subject=subject,
             body=draft.body,
-            reply_to_thread_id=draft.gmail_thread_id,
-            reply_to_message_id=draft.gmail_message_id
+            reply_to_thread_id=reply_to_thread_id,
+            reply_to_message_id=reply_to_message_id
         )
         
+        from sqlalchemy import func
+        min_step = db.query(func.min(Message.step_number)).filter(
+            Message.campaign_lead_id == campaign_lead.id,
+            Message.step_number < 0
+        ).scalar()
+        if min_step is None:
+            next_step = -2
+        else:
+            next_step = min_step - 1
+
         # Record outbound
         new_msg = Message(
              campaign_lead_id=campaign_lead.id,
              direction=MessageDirection.OUTBOUND,
-             step_number=-99, # Manual/Draft reply
+             step_number=next_step,
              gmail_message_id=gmail_msg_id,
              gmail_thread_id=gmail_thread_id,
-             subject=draft.subject,
+             subject=subject,
              body=draft.body,
              sent_at=datetime.utcnow(),
              is_draft=False

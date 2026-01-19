@@ -49,7 +49,7 @@ export default function NewCampaignPage() {
 
     // Add Leads Modal State
     const [showAddLeadsModal, setShowAddLeadsModal] = useState(false);
-    const [addLeadsTab, setAddLeadsTab] = useState<'csv' | 'source'>('csv');
+    const [addLeadsTab, setAddLeadsTab] = useState<'csv' | 'source' | 'leadgen'>('csv');
     const [csvFile, setCsvFile] = useState<File | null>(null);
     const [csvMapping, setCsvMapping] = useState<any>(null); // Columns from backend
     const [csvColumns, setCsvColumns] = useState<string[]>([]);
@@ -62,6 +62,14 @@ export default function NewCampaignPage() {
     });
     const [sourcingDomains, setSourcingDomains] = useState('');
     const [sourcingResults, setSourcingResults] = useState<any>(null);
+    const [leadGenQuery, setLeadGenQuery] = useState('');
+    const [leadGenLocation, setLeadGenLocation] = useState('');
+    const [leadGenResults, setLeadGenResults] = useState<any[]>([]);
+    const [leadGenSelected, setLeadGenSelected] = useState<string[]>([]);
+    const [leadGenSearched, setLeadGenSearched] = useState(false);
+    const [leadGenDesiredCount, setLeadGenDesiredCount] = useState(50);
+    const [leadGenCompanies, setLeadGenCompanies] = useState<any[]>([]);
+    const [leadGenEnriching, setLeadGenEnriching] = useState<string | null>(null);
 
     useEffect(() => {
         const init = async () => {
@@ -318,6 +326,81 @@ export default function NewCampaignPage() {
             alert('Sourcing failed.');
         }
         setSaving(false);
+    };
+
+    const handleLeadGenSearch = async () => {
+        if (!token || !workspaceId || !leadGenQuery.trim()) return;
+        setSaving(true);
+        try {
+            setLeadGenSearched(false);
+            setLeadGenResults([]);
+            setLeadGenCompanies([]);
+            const res = await leads.leadgenSearch(
+                token,
+                workspaceId,
+                leadGenQuery.trim(),
+                leadGenLocation.trim() || undefined,
+                leadGenDesiredCount
+            );
+            const results = res?.leads || [];
+            setLeadGenResults(results);
+            setLeadGenCompanies(res?.companies || []);
+            setLeadGenSelected(results.filter((lead: any) => !(lead.missing_fields?.length)).map((lead: any) => lead.email));
+        } catch (err) {
+            alert('Lead gen search failed.');
+        }
+        setLeadGenSearched(true);
+        setSaving(false);
+    };
+
+    const handleLeadGenImport = async () => {
+        if (!token || !workspaceId || leadGenSelected.length === 0) return;
+        setSaving(true);
+        try {
+            const selected = leadGenResults.filter(lead => leadGenSelected.includes(lead.email));
+            const res = await leads.leadgenImport(token, workspaceId, selected);
+            await refreshLeads(token, workspaceId);
+            setLeadGenResults([]);
+            setLeadGenSelected([]);
+            setLeadGenQuery('');
+            setLeadGenLocation('');
+            setLeadGenSearched(false);
+            setLeadGenCompanies([]);
+            setShowAddLeadsModal(false);
+            alert(`Imported ${res.length} leads!`);
+        } catch (err) {
+            alert('Lead gen import failed.');
+        }
+        setSaving(false);
+    };
+
+    const handleLeadGenEnrich = async (company: string, website: string) => {
+        if (!token || !workspaceId) return;
+        if (!website) {
+            alert('No website available to enrich.');
+            return;
+        }
+        setLeadGenEnriching(website);
+        try {
+            const res = await leads.leadgenEnrich(token, workspaceId, company, website);
+            const existing = new Set(leadGenResults.map(l => l.email));
+            const merged = [...leadGenResults];
+            let added = 0;
+            for (const lead of res) {
+                if (!existing.has(lead.email)) {
+                    merged.push(lead);
+                    existing.add(lead.email);
+                    added += 1;
+                }
+            }
+            setLeadGenResults(merged);
+            if (added === 0) {
+                alert('No new contacts found for this company.');
+            }
+        } catch (err) {
+            alert('Lead enrichment failed.');
+        }
+        setLeadGenEnriching(null);
     };
 
     if (loading) {
@@ -897,6 +980,20 @@ export default function NewCampaignPage() {
                             >
                                 Find Leads
                             </button>
+                            <button
+                                onClick={() => setAddLeadsTab('leadgen')}
+                                style={{
+                                    padding: '8px 16px',
+                                    background: 'none',
+                                    border: 'none',
+                                    borderBottom: addLeadsTab === 'leadgen' ? '2px solid var(--accent-primary)' : 'none',
+                                    color: addLeadsTab === 'leadgen' ? 'var(--text-primary)' : 'var(--text-muted)',
+                                    cursor: 'pointer',
+                                    fontWeight: '500'
+                                }}
+                            >
+                                Lead Gen
+                            </button>
                         </div>
 
                         {addLeadsTab === 'csv' && (
@@ -989,6 +1086,141 @@ export default function NewCampaignPage() {
                                         {saving ? 'Searching...' : 'Find Leads'}
                                     </button>
                                 </div>
+                            </div>
+                        )}
+
+                        {addLeadsTab === 'leadgen' && (
+                            <div>
+                                <p style={{ marginBottom: '16px', color: 'var(--text-secondary)' }}>
+                                    Search the web for companies and extract contacts with full names and titles.
+                                </p>
+                                <div style={{ display: 'grid', gap: '12px', marginBottom: '16px' }}>
+                                    <div>
+                                        <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)' }}>
+                                            Query
+                                        </label>
+                                        <input
+                                            className="input"
+                                            placeholder="e.g., restaurants"
+                                            value={leadGenQuery}
+                                            onChange={(e) => setLeadGenQuery(e.target.value)}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)' }}>
+                                            Location (optional)
+                                        </label>
+                                        <input
+                                            className="input"
+                                            placeholder="e.g., Jaipur"
+                                            value={leadGenLocation}
+                                            onChange={(e) => setLeadGenLocation(e.target.value)}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label style={{ display: 'block', marginBottom: '6px', color: 'var(--text-secondary)' }}>
+                                            Desired leads
+                                        </label>
+                                        <input
+                                            className="input"
+                                            type="number"
+                                            min={1}
+                                            max={200}
+                                            value={leadGenDesiredCount}
+                                            onChange={(e) => setLeadGenDesiredCount(Number(e.target.value) || 50)}
+                                        />
+                                    </div>
+                                </div>
+                                <div style={{ textAlign: 'right', marginBottom: '16px' }}>
+                                    <button
+                                        className="btn btn-primary"
+                                        disabled={!leadGenQuery.trim() || saving}
+                                        onClick={handleLeadGenSearch}
+                                    >
+                                        {saving ? 'Searching...' : 'Search'}
+                                    </button>
+                                </div>
+
+                                {leadGenResults.length > 0 && (
+                                    <div style={{ marginBottom: '16px' }}>
+                                        <div style={{ fontWeight: 600, marginBottom: '8px' }}>Results</div>
+                                        <div style={{ display: 'grid', gap: '8px', marginBottom: '16px' }}>
+                                            {leadGenResults.map((lead) => (
+                                                <label key={lead.email} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={leadGenSelected.includes(lead.email)}
+                                                        onChange={(e) => {
+                                                            const checked = e.target.checked;
+                                                            setLeadGenSelected(prev =>
+                                                                checked
+                                                                    ? [...prev, lead.email]
+                                                                    : prev.filter(email => email !== lead.email)
+                                                            );
+                                                        }}
+                                                    />
+                                                    <div>
+                                                        <div style={{ fontWeight: 500 }}>
+                                                            {lead.first_name} {lead.last_name} - {lead.title}
+                                                        </div>
+                                                        <div style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                                            {lead.company} | {lead.email}
+                                                        </div>
+                                                        {lead.missing_fields?.length > 0 && (
+                                                            <div style={{ color: 'var(--text-warning)', fontSize: '12px' }}>
+                                                                Needs enrichment: {lead.missing_fields.join(', ')}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </label>
+                                            ))}
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <button
+                                                className="btn btn-primary"
+                                                disabled={leadGenSelected.length === 0 || saving}
+                                                onClick={handleLeadGenImport}
+                                            >
+                                                {saving ? 'Importing...' : 'Import Selected'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {leadGenCompanies.length > 0 && (
+                                    <div style={{ marginBottom: '16px' }}>
+                                        <div style={{ fontWeight: 600, marginBottom: '8px' }}>Companies</div>
+                                        <div style={{ display: 'grid', gap: '8px' }}>
+                                        {leadGenCompanies.map((company) => {
+                                            const companyKey = company.website || company.source_url;
+                                            const isEnriching = leadGenEnriching === companyKey;
+                                            return (
+                                                <div key={companyKey} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                                                    <div>
+                                                        <div style={{ fontWeight: 500 }}>{company.company}</div>
+                                                        <div style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                                            {companyKey}
+                                                        </div>
+                                                    </div>
+                                                    <button
+                                                        className="btn btn-secondary btn-sm"
+                                                        disabled={isEnriching || !companyKey}
+                                                        onClick={() => handleLeadGenEnrich(company.company, companyKey)}
+                                                    >
+                                                        {isEnriching ? 'Enriching...' : 'Enrich Contacts'}
+                                                    </button>
+                                                </div>
+                                            );
+                                        })}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {leadGenSearched && leadGenResults.length === 0 && leadGenCompanies.length === 0 && (
+                                    <div className="alert alert-warning">
+                                        No leads found. Try a different query or location.
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>

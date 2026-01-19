@@ -171,6 +171,45 @@ class WebSourceResponse(BaseModel):
     leads: List[LeadResponse]
 
 
+class LeadGenRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    location: Optional[str] = None
+    desired_count: Optional[int] = Field(default=50, ge=1, le=200)
+
+
+class LeadGenCandidate(BaseModel):
+    email: EmailStr
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    company: str
+    title: Optional[str] = None
+    website: Optional[str] = None
+    source_url: Optional[str] = None
+    missing_fields: Optional[List[str]] = None
+
+
+class LeadGenSearchResponse(BaseModel):
+    query: str
+    location: Optional[str]
+    leads: List[LeadGenCandidate]
+    companies: Optional[List["LeadGenCompanyCandidate"]] = None
+
+
+class LeadGenImportRequest(BaseModel):
+    leads: List[LeadGenCandidate]
+
+
+class LeadGenCompanyCandidate(BaseModel):
+    company: str
+    website: Optional[str] = None
+    source_url: Optional[str] = None
+
+
+class LeadGenEnrichRequest(BaseModel):
+    company: str
+    website: str
+
+
 # ===========================================
 # CAMPAIGN SCHEMAS
 # ===========================================

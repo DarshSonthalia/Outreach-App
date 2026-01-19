@@ -9,10 +9,13 @@ from app.database import get_db
 from app.models import User, Workspace, Lead, SuppressionEntry
 from app.schemas import (
     LeadResponse, CSVColumnMapping, CSVUploadResponse,
-    WebSourceRequest, WebSourceResponse
+    WebSourceRequest, WebSourceResponse,
+    LeadGenRequest, LeadGenSearchResponse, LeadGenImportRequest,
+    LeadGenEnrichRequest, LeadGenCandidate
 )
 from app.utils.dependencies import get_current_user
 from app.services.lead_service import LeadService
+from app.services.lead_gen_service import LeadGenService
 
 router = APIRouter()
 
@@ -260,6 +263,148 @@ async def list_leads(
         Lead.workspace_id == workspace_id
     ).offset(skip).limit(limit).all()
     
+    return leads
+
+
+@router.post("/leadgen/search", response_model=LeadGenSearchResponse)
+async def leadgen_search(
+    workspace_id: int,
+    request: LeadGenRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Search the web for businesses and extract contacts with full data fields.
+    """
+    workspace = db.query(Workspace).filter(
+        Workspace.id == workspace_id,
+        Workspace.user_id == current_user.id
+    ).first()
+
+    if not workspace:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found"
+        )
+
+    suppressed_emails = set(
+        entry.email.lower() for entry in
+        db.query(SuppressionEntry).filter(
+            SuppressionEntry.workspace_id == workspace_id
+        ).all()
+    )
+    existing_emails = set(
+        email.lower() for (email,) in
+        db.query(Lead.email).filter(
+            Lead.workspace_id == workspace_id
+        ).all()
+    )
+
+    leads, companies = LeadGenService.search_with_companies(
+        query=request.query,
+        location=request.location,
+        exclude_emails=suppressed_emails | existing_emails,
+        target_leads=request.desired_count,
+    )
+
+    return LeadGenSearchResponse(
+        query=request.query,
+        location=request.location,
+        leads=leads,
+        companies=companies,
+    )
+
+
+@router.post("/leadgen/import", response_model=List[LeadResponse])
+async def leadgen_import(
+    workspace_id: int,
+    request: LeadGenImportRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Import lead-gen candidates into the workspace.
+    """
+    workspace = db.query(Workspace).filter(
+        Workspace.id == workspace_id,
+        Workspace.user_id == current_user.id
+    ).first()
+
+    if not workspace:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found"
+        )
+
+    suppressed_emails = set(
+        entry.email.lower() for entry in
+        db.query(SuppressionEntry).filter(
+            SuppressionEntry.workspace_id == workspace_id
+        ).all()
+    )
+
+    created_leads = []
+    for lead_data in request.leads:
+        email_lower = lead_data.email.lower()
+        if email_lower in suppressed_emails:
+            continue
+
+        existing = db.query(Lead).filter(
+            Lead.workspace_id == workspace_id,
+            Lead.email == lead_data.email
+        ).first()
+        if existing:
+            continue
+
+        lead = Lead(
+            workspace_id=workspace_id,
+            email=lead_data.email,
+            first_name=lead_data.first_name,
+            last_name=lead_data.last_name,
+            company=lead_data.company,
+            title=lead_data.title,
+            is_valid_email=True,
+            is_role_email=False,
+            source="lead_gen",
+            source_url=lead_data.source_url or lead_data.website,
+        )
+        db.add(lead)
+        created_leads.append(lead)
+
+    db.commit()
+
+    for lead in created_leads:
+        db.refresh(lead)
+
+    return created_leads
+
+
+@router.post("/leadgen/enrich", response_model=List[LeadGenCandidate])
+async def leadgen_enrich(
+    workspace_id: int,
+    request: LeadGenEnrichRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Enrich a single company by crawling its site for contacts.
+    """
+    workspace = db.query(Workspace).filter(
+        Workspace.id == workspace_id,
+        Workspace.user_id == current_user.id
+    ).first()
+
+    if not workspace:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found"
+        )
+
+    leads = LeadGenService.enrich_company(
+        website=request.website,
+        company=request.company,
+    )
+
     return leads
 
 
