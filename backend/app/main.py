@@ -6,6 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 import logging
 from fastapi.middleware.cors import CORSMiddleware
+from urllib.parse import urlparse
 from app.config import settings
 from app.database import engine, Base
 from app.routers import auth, workspaces, mailboxes, domains, leads, campaigns, inbox, booking, health, campaigns_ai, inbox_ai, campaign_leads
@@ -39,10 +40,18 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={"detail": exc.errors(), "body": body_str},
     )
 
+def _normalize_origin(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return url
+
+frontend_origin = _normalize_origin(settings.frontend_url)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url],
+    allow_origins=list({frontend_origin}),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

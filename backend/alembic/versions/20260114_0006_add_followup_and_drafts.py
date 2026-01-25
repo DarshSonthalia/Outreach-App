@@ -24,8 +24,25 @@ def upgrade():
     
     # Enums
     # We define them but use them carefully.
-    followup_state_enum = sa.Enum('SCHEDULED', 'CANCELLED', 'COMPLETED', name='followupstate')
-    cancel_reason_enum = sa.Enum('REPLIED', 'NEGATIVE_REPLY', 'UNSUBSCRIBE', 'BOOKED', 'BOUNCE', 'SUPPRESSED', 'MANUAL', 'SAFETY', name='cancelreason')
+    followup_state_enum = postgresql.ENUM(
+        'SCHEDULED',
+        'CANCELLED',
+        'COMPLETED',
+        name='followupstate',
+        create_type=False,
+    )
+    cancel_reason_enum = postgresql.ENUM(
+        'REPLIED',
+        'NEGATIVE_REPLY',
+        'UNSUBSCRIBE',
+        'BOOKED',
+        'BOUNCE',
+        'SUPPRESSED',
+        'MANUAL',
+        'SAFETY',
+        name='cancelreason',
+        create_type=False,
+    )
     
     if 'followup_state' not in cols_cl:
         followup_state_enum.create(op.get_bind(), checkfirst=True)
@@ -55,7 +72,15 @@ def upgrade():
     res_m = conn.execute(sa.text("SELECT column_name FROM information_schema.columns WHERE table_name='messages'")).fetchall()
     cols_m = [r[0] for r in res_m]
     
-    draft_status_enum = sa.Enum('GENERATED', 'EDITED', 'SENT', 'DISCARDED', 'SAVED_TO_GMAIL_DRAFT', name='draftstatus')
+    draft_status_enum = postgresql.ENUM(
+        'GENERATED',
+        'EDITED',
+        'SENT',
+        'DISCARDED',
+        'SAVED_TO_GMAIL_DRAFT',
+        name='draftstatus',
+        create_type=False,
+    )
     
     if 'planned_send_at' not in cols_m:
         op.add_column('messages', sa.Column('planned_send_at', sa.DateTime(), nullable=True))
@@ -84,6 +109,7 @@ def upgrade():
     # 3. Create reply_drafts table
     tables = conn.execute(sa.text("SELECT table_name FROM information_schema.tables WHERE table_name='reply_drafts'")).fetchall()
     if not tables:
+        draft_status_enum.create(op.get_bind(), checkfirst=True)
         op.create_table('reply_drafts',
             sa.Column('id', sa.Integer(), nullable=False),
             sa.Column('workspace_id', sa.Integer(), nullable=False),
