@@ -7,7 +7,7 @@ import { Menu, X } from 'lucide-react'
 
 export function Navbar() {
   const [isOpen, setIsOpen] = useState(false)
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://app.intently.ai'
+  const appUrl = '/app'
 
   const scrollToSection = (id: string) => {
     setIsOpen(false)
