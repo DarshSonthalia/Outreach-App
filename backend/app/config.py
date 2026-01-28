@@ -29,9 +29,10 @@ class Settings(BaseSettings):
     google_redirect_uri: str = "https://intently-ai.com/api/mailboxes/oauth/callback"
     
     # URLs
-    frontend_url: str = "http://localhost:3000"
-    backend_url: str = "http://localhost:8000"
-    app_public_base_url: str = "http://localhost:8000"
+    frontend_url: str = "https://intently-ai.com/app"
+    backend_url: str = "https://intently-ai.com"
+    app_public_base_url: str = "https://intently-ai.com"
+
     
     # Calendly
     calendly_webhook_secret: str = ""
