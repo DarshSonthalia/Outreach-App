@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # Google OAuth
     google_client_id: str = ""
     google_client_secret: str = ""
-    google_redirect_uri: str = "http://localhost:8000/api/mailboxes/oauth/callback"
+    google_redirect_uri: str = "https://intently-ai.com/api/mailboxes/oauth/callback"
     
     # URLs
     frontend_url: str = "http://localhost:3000"
