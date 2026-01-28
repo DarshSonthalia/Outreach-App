@@ -72,7 +72,7 @@ class GmailService:
         flow = Flow.from_client_config(
             client_config,
             scopes=GMAIL_SCOPES,
-            redirect_uri=redirect_uri or settings.google_redirect_uri
+            redirect_uri=settings.google_redirect_uri,
         )
         
         return flow
