@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/api';
 
@@ -50,19 +51,14 @@ export default function HomePage() {
             }}>
                 {/* Logo/Brand */}
                 <div style={{ textAlign: 'center', marginBottom: '40px' }}>
-                    <div style={{
-                        width: '64px',
-                        height: '64px',
-                        borderRadius: '16px',
-                        background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        margin: '0 auto 16px',
-                        fontSize: '24px',
-                    }}>
-                        📧
-                    </div>
+                    <Image
+                        src="/intently-logo.png"
+                        alt="intently-ai logo"
+                        width={64}
+                        height={64}
+                        priority
+                        style={{ margin: '0 auto 16px', borderRadius: '12px' }}
+                    />
                     <h1 style={{
                         fontSize: '28px',
                         fontWeight: '700',
