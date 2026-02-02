@@ -10,28 +10,28 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
     # Database
-    database_url: str = "postgresql://outreach:outreach_dev@localhost:5432/outreach_db"
+    database_url: str
     
     # Redis
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str
     
     # JWT Authentication
-    jwt_secret_key: str = "CHANGE-THIS-IN-PRODUCTION"
+    jwt_secret_key: str
     jwt_algorithm: str = "HS256"
     jwt_expiration_hours: int = 24
     
     # OAuth Token Encryption (Fernet key)
-    oauth_encryption_key: str = "CHANGE-THIS-IN-PRODUCTION"
+    oauth_encryption_key: str
     
     # Google OAuth
-    google_client_id: str = ""
-    google_client_secret: str = ""
-    google_redirect_uri: str = "https://intently-ai.com/api/mailboxes/oauth/callback"
+    google_client_id: str
+    google_client_secret: str
+    google_redirect_uri: str
     
     # URLs
-    frontend_url: str = "https://intently-ai.com/app"
-    backend_url: str = "https://intently-ai.com"
-    app_public_base_url: str = "https://intently-ai.com"
+    frontend_url: str
+    backend_url: str
+    app_public_base_url: str
 
     
     # Calendly
