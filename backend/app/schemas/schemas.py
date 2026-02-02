@@ -174,7 +174,7 @@ class WebSourceResponse(BaseModel):
 class LeadGenRequest(BaseModel):
     query: str = Field(..., min_length=1)
     location: Optional[str] = None
-    desired_count: Optional[int] = Field(default=50, ge=1, le=200)
+    desired_count: Optional[int] = Field(default=20, ge=1, le=200)
 
 
 class LeadGenCandidate(BaseModel):

@@ -157,6 +157,11 @@ AGENCY_KEYWORDS = [
     "branding",
     "creative",
     "digital",
+    "company",
+    "business",
+    "services",
+    "team",
+    "contact",
     "seo",
     "social",
     "performance",
@@ -198,9 +203,18 @@ DEFAULT_LOCATION_EXPANSIONS = [
 
 
 class LeadGenService:
-    MAX_INITIAL_LEADS = 120
-    TARGET_FINAL_LEADS = 50
+    MIN_TARGET_LEADS = 10
+    MAX_TARGET_LEADS = 20
+    MAX_INITIAL_LEADS = 60
+    TARGET_FINAL_LEADS = 20
     GOOGLE_CSE_MAX_RESULTS = 40
+    MAX_QUERY_VARIANTS = 5
+    MAX_COMPANIES_TO_CRAWL = 60
+    MAX_PAGES_PER_COMPANY = 4
+    MAX_LEADS_PER_COMPANY = 3
+    SEARCH_TIMEOUT_SECONDS = 6
+    CRAWL_TIMEOUT_SECONDS = 5
+    TOTAL_TIME_BUDGET_SECONDS = int(os.getenv("LEADGEN_TOTAL_TIMEOUT_SECONDS", "45"))
     EXTRA_PATHS = [
         "/about-us",
         "/company",
@@ -245,10 +259,14 @@ class LeadGenService:
         Search for businesses, filter list pages via OpenAI, and extract contacts.
         The max_results and target_leads are capped to preserve OpenAI usage.
         """
-        target_leads = min(target_leads or LeadGenService.TARGET_FINAL_LEADS, 200)
+        target_leads = target_leads or LeadGenService.TARGET_FINAL_LEADS
+        target_leads = max(
+            LeadGenService.MIN_TARGET_LEADS,
+            min(int(target_leads), LeadGenService.MAX_TARGET_LEADS),
+        )
         max_results = min(
-            max_results or max(target_leads * 4, LeadGenService.MAX_INITIAL_LEADS),
-            400,
+            max_results or max(target_leads * 3, LeadGenService.MAX_INITIAL_LEADS),
+            120,
         )
         if use_ai_filter is None:
             use_ai_filter = os.getenv("LEADGEN_USE_AI_FILTER", "").strip() == "1"
@@ -262,21 +280,21 @@ class LeadGenService:
         else:
             location_queries = [
                 f"{base_query} {loc}".strip()
-                for loc in DEFAULT_LOCATION_EXPANSIONS
+                for loc in DEFAULT_LOCATION_EXPANSIONS[:3]
             ]
-            for loc_query in location_queries:
-                if loc_query and loc_query not in queries:
-                    queries.append(loc_query)
+            queries = [q for q in location_queries if q] + [q for q in queries if q not in location_queries]
+        queries = queries[:LeadGenService.MAX_QUERY_VARIANTS]
 
         exclude_set = {e.lower().strip() for e in (exclude_emails or []) if e}
         candidates: List[dict] = []
         companies: List[dict] = []
         seen_companies = set()
+        deadline = time.time() + LeadGenService.TOTAL_TIME_BUDGET_SECONDS
 
-        company_goal = min(max(target_leads * 4, 80), 500)
+        company_goal = min(max(target_leads * 3, 30), LeadGenService.MAX_COMPANIES_TO_CRAWL)
 
         for idx, q in enumerate(queries):
-            if len(companies) >= company_goal:
+            if len(companies) >= company_goal or time.time() >= deadline:
                 break
             leads = LeadGenService._combined_search(
                 q,
@@ -309,6 +327,7 @@ class LeadGenService:
                 companies=companies,
                 exclude_set=exclude_set,
                 target_leads=target_leads,
+                deadline=deadline,
             )
 
         return candidates, companies
@@ -334,10 +353,11 @@ class LeadGenService:
             leads.extend(LeadGenService._google_cse_search(query, max_results=cse_limit))
             remaining = max_results - len(leads)
 
-        ddg_limit = min(remaining, max(10, remaining // 2))
-        leads.extend(LeadGenService._duckduckgo_html_search(query, max_results=ddg_limit))
-        remaining = max_results - len(leads)
         if remaining > 0:
+            ddg_limit = min(remaining, max(20, remaining))
+            leads.extend(LeadGenService._duckduckgo_html_search(query, max_results=ddg_limit))
+            remaining = max_results - len(leads)
+        if remaining > 0 and os.getenv("LEADGEN_ENABLE_BING", "").strip() == "1":
             leads.extend(
                 LeadGenService._bing_search(
                     query,
@@ -351,6 +371,8 @@ class LeadGenService:
 
     @staticmethod
     def _google_cse_search(query: str, max_results: int) -> List[SearchLead]:
+        if max_results <= 0:
+            return []
         api_key = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
         cx = os.getenv("GOOGLE_CSE_CX", "").strip()
         if not api_key or not cx:
@@ -384,7 +406,7 @@ class LeadGenService:
                 resp = session.get(
                     "https://www.googleapis.com/customsearch/v1",
                     params=params,
-                    timeout=30,
+                    timeout=LeadGenService.SEARCH_TIMEOUT_SECONDS,
                 )
                 resp.raise_for_status()
                 payload = resp.json()
@@ -463,6 +485,8 @@ class LeadGenService:
 
     @staticmethod
     def _duckduckgo_search(query: str, max_results: int) -> List[SearchLead]:
+        if max_results <= 0:
+            return []
         try:
             ddgs = DDGS()
             results = ddgs.text(query, max_results=max_results)
@@ -496,6 +520,8 @@ class LeadGenService:
 
     @staticmethod
     def _duckduckgo_html_search(query: str, max_results: int) -> List[SearchLead]:
+        if max_results <= 0:
+            return []
         url = "https://duckduckgo.com/html/"
         session = requests.Session()
         session.headers.update(
@@ -512,7 +538,11 @@ class LeadGenService:
         for page in range(max_pages):
             offset = page * page_size
             try:
-                resp = session.get(url, params={"q": query, "s": offset}, timeout=30)
+                resp = session.get(
+                    url,
+                    params={"q": query, "s": offset},
+                    timeout=LeadGenService.SEARCH_TIMEOUT_SECONDS,
+                )
                 resp.raise_for_status()
             except Exception as exc:
                 logger.warning("DuckDuckGo HTML search error: %s", exc)
@@ -557,6 +587,8 @@ class LeadGenService:
 
     @staticmethod
     def _bing_search(query: str, max_results: int) -> List[SearchLead]:
+        if max_results <= 0:
+            return []
         url = "https://www.bing.com/search"
         session = requests.Session()
         session.headers.update(
@@ -581,7 +613,7 @@ class LeadGenService:
                 resp = session.get(
                     url,
                     params={"q": query, "first": first, "count": page_size},
-                    timeout=30,
+                    timeout=LeadGenService.SEARCH_TIMEOUT_SECONDS,
                 )
                 resp.raise_for_status()
             except Exception as exc:
@@ -676,7 +708,10 @@ class LeadGenService:
         return filtered
 
     @staticmethod
-    def _extract_contacts_from_lead(lead: SearchLead) -> Tuple[List[dict], List[dict]]:
+    def _extract_contacts_from_lead(
+        lead: SearchLead,
+        max_candidates: int = 0,
+    ) -> Tuple[List[dict], List[dict]]:
         if not lead.website:
             return [], []
 
@@ -690,7 +725,10 @@ class LeadGenService:
         seen_emails = set()
 
         paths = list(dict.fromkeys(safety_config.ALLOWED_PATHS + LeadGenService.EXTRA_PATHS))
-        max_pages = safety_config.MAX_PAGES_PER_DOMAIN + 3
+        max_pages = min(
+            safety_config.MAX_PAGES_PER_DOMAIN + 1,
+            LeadGenService.MAX_PAGES_PER_COMPANY,
+        )
         paths = paths[:max_pages]
 
         page_results: List[Tuple[List[dict], List[dict]]] = []
@@ -705,7 +743,11 @@ class LeadGenService:
                 for path in paths
             }
             for future in as_completed(futures):
-                result = future.result()
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    logger.debug("Contact extraction future failed for %s: %s", lead.website, exc)
+                    continue
                 if result:
                     page_results.append(result)
 
@@ -717,6 +759,8 @@ class LeadGenService:
                         continue
                     seen_emails.add(email_lower)
                     target.append(candidate)
+                    if max_candidates > 0 and len(strict_candidates) + len(partial_candidates) >= max_candidates:
+                        return strict_candidates, partial_candidates
 
         return strict_candidates, partial_candidates
 
@@ -750,6 +794,7 @@ class LeadGenService:
         companies: Sequence[dict],
         exclude_set: set,
         target_leads: int,
+        deadline: Optional[float] = None,
     ) -> List[dict]:
         if not companies or target_leads <= 0:
             return []
@@ -758,6 +803,8 @@ class LeadGenService:
         max_workers = 4
 
         for idx in range(0, len(companies), max_workers):
+            if deadline is not None and time.time() >= deadline:
+                break
             batch = companies[idx: idx + max_workers]
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {}
@@ -766,10 +813,21 @@ class LeadGenService:
                     name = company.get("company")
                     if not website or not name:
                         continue
-                    futures[executor.submit(LeadGenService.enrich_company, website, name)] = website
+                    futures[executor.submit(
+                        LeadGenService.enrich_company,
+                        website,
+                        name,
+                        LeadGenService.MAX_LEADS_PER_COMPANY,
+                    )] = website
 
                 for future in as_completed(futures):
-                    results = future.result() or []
+                    if deadline is not None and time.time() >= deadline:
+                        return leads
+                    try:
+                        results = future.result() or []
+                    except Exception as exc:
+                        logger.debug("Company enrichment failed: %s", exc)
+                        continue
                     for candidate in results:
                         email_lower = candidate["email"].lower().strip()
                         if email_lower in exclude_set or email_lower in seen_emails:
@@ -784,7 +842,11 @@ class LeadGenService:
         return leads
 
     @staticmethod
-    def enrich_company(website: str, company: str) -> List[dict]:
+    def enrich_company(
+        website: str,
+        company: str,
+        max_candidates: Optional[int] = None,
+    ) -> List[dict]:
         lead = SearchLead(
             name=company,
             website=website,
@@ -792,14 +854,21 @@ class LeadGenService:
             source="leadgen_enrich",
             confidence=0.0,
         )
-        strict, partial = LeadGenService._extract_contacts_from_lead(lead)
-        return strict + partial
+        target = max_candidates or LeadGenService.MAX_LEADS_PER_COMPANY
+        strict, partial = LeadGenService._extract_contacts_from_lead(lead, max_candidates=target)
+        results = strict + partial
+        return results[:target]
 
     @staticmethod
     def _fetch_page(url: str) -> Optional[str]:
         try:
             headers = {"User-Agent": "Mozilla/5.0 (compatible; LeadGenBot/1.0)"}
-            resp = requests.get(url, headers=headers, timeout=8)
+            resp = requests.get(
+                url,
+                headers=headers,
+                timeout=LeadGenService.CRAWL_TIMEOUT_SECONDS,
+                allow_redirects=True,
+            )
             resp.raise_for_status()
             return resp.text
         except Exception as exc:
@@ -1131,21 +1200,26 @@ class LeadGenService:
         base = query.strip()
         if not base:
             return []
+        lowered = base.lower()
+        agency_intent = any(k in lowered for k in AGENCY_KEYWORDS)
         variants = [
             base,
-            f"{base} agency",
-            f"{base} marketing agency",
-            f"{base} digital marketing agency",
-            f"{base} creative agency",
-            f"{base} advertising agency",
-            f"{base} branding agency",
-            f"{base} social media agency",
-            f"{base} performance marketing agency",
-            f"{base} growth marketing agency",
-            f"{base} SEO agency",
-            f"{base} agency website",
-            f"{base} agency contact",
+            f"{base} company",
+            f"{base} business",
+            f"{base} services",
+            f"{base} team",
+            f"{base} contact",
+            f"{base} official website",
         ]
+        if agency_intent:
+            variants.extend(
+                [
+                    f"{base} agency",
+                    f"{base} digital agency",
+                    f"{base} creative agency",
+                    f"{base} agency contact",
+                ]
+            )
         seen = set()
         ordered: List[str] = []
         for v in variants:

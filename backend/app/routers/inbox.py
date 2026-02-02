@@ -9,7 +9,8 @@ import re
 from app.database import get_db
 from app.models import (
     User, Workspace, Campaign, CampaignLead, Message, Lead,
-    MessageDirection, SuppressionReason, Mailbox, BookingEvent
+    MessageDirection, SuppressionReason, Mailbox, BookingEvent,
+    ReplyDraft, DraftStatus
 )
 from app.schemas import ReplyResponse, ClassifyRequest, SendReplyRequest
 from app.utils.dependencies import get_current_user
@@ -22,6 +23,7 @@ from datetime import datetime
 router = APIRouter()
 import logging
 logger = logging.getLogger(__name__)
+MAX_REPLY_DRAFTS_PER_THREAD = 2
 
 
 def clean_message_body(body: str) -> str:
@@ -312,6 +314,12 @@ async def get_reply(
     explanation = ""
     if reply.classification:
         explanation = ClassificationService.get_classification_explanation(reply.classification)
+    ai_reply_generation_count = 0
+    if reply.gmail_thread_id:
+        ai_reply_generation_count = db.query(ReplyDraft).filter(
+            ReplyDraft.workspace_id == campaign.workspace_id,
+            ReplyDraft.gmail_thread_id == reply.gmail_thread_id
+        ).count()
     
     return {
         "id": reply.id,
@@ -343,7 +351,10 @@ async def get_reply(
         "booking_confirmed": db.query(BookingEvent).filter(
             BookingEvent.invitee_email == lead.email,
             BookingEvent.event_type == "invitee.created"
-        ).count() > 0
+        ).count() > 0,
+        "ai_reply_generation_count": ai_reply_generation_count,
+        "ai_reply_generation_limit": MAX_REPLY_DRAFTS_PER_THREAD,
+        "ai_reply_remaining_generations": max(0, MAX_REPLY_DRAFTS_PER_THREAD - ai_reply_generation_count),
     }
 
 
@@ -469,7 +480,6 @@ async def send_reply(
 # ==========================================
 
 from app.services.ai_service import AIService
-from app.models import ReplyDraft, DraftStatus
 
 @router.post("/threads/{gmail_thread_id}/ai-draft")
 async def generate_ai_draft(
@@ -492,6 +502,17 @@ async def generate_ai_draft(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No inbound message found for this thread"
+        )
+
+    # Limit AI reply drafts per thread to prevent repeated regenerations.
+    existing_drafts = db.query(ReplyDraft).filter(
+        ReplyDraft.workspace_id == latest_msg.campaign_lead.campaign.workspace_id,
+        ReplyDraft.gmail_thread_id == gmail_thread_id
+    ).count()
+    if existing_drafts >= MAX_REPLY_DRAFTS_PER_THREAD:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"AI reply generation limit reached ({MAX_REPLY_DRAFTS_PER_THREAD})."
         )
 
     # 2. Context Gathering
@@ -557,7 +578,26 @@ async def generate_ai_draft(
     db.commit()
     db.refresh(new_draft)
     
-    return new_draft
+    generation_count = existing_drafts + 1
+    return {
+        "id": new_draft.id,
+        "workspace_id": new_draft.workspace_id,
+        "mailbox_id": new_draft.mailbox_id,
+        "gmail_thread_id": new_draft.gmail_thread_id,
+        "gmail_message_id": new_draft.gmail_message_id,
+        "subject": new_draft.subject,
+        "body": new_draft.body,
+        "model": new_draft.model,
+        "prompt_version": new_draft.prompt_version,
+        "status": new_draft.status.value if new_draft.status else None,
+        "risk_flags": new_draft.risk_flags,
+        "classification": new_draft.classification,
+        "created_at": new_draft.created_at,
+        "updated_at": new_draft.updated_at,
+        "generation_count": generation_count,
+        "generation_limit": MAX_REPLY_DRAFTS_PER_THREAD,
+        "remaining_generations": max(0, MAX_REPLY_DRAFTS_PER_THREAD - generation_count),
+    }
 
 
 from fastapi import Body

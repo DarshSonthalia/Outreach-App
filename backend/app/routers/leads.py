@@ -2,6 +2,7 @@
 Leads router - CSV upload, column mapping, web sourcing.
 """
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -300,11 +301,17 @@ async def leadgen_search(
         ).all()
     )
 
-    leads, companies = LeadGenService.search_with_companies(
-        query=request.query,
-        location=request.location,
-        exclude_emails=suppressed_emails | existing_emails,
-        target_leads=request.desired_count,
+    desired = request.desired_count or 20
+    desired = max(10, min(desired, 20))
+
+    leads, companies = await run_in_threadpool(
+        LeadGenService.search_with_companies,
+        request.query,
+        request.location,
+        suppressed_emails | existing_emails,
+        None,
+        desired,
+        None,
     )
 
     return LeadGenSearchResponse(
@@ -400,9 +407,11 @@ async def leadgen_enrich(
             detail="Workspace not found"
         )
 
-    leads = LeadGenService.enrich_company(
-        website=request.website,
-        company=request.company,
+    leads = await run_in_threadpool(
+        LeadGenService.enrich_company,
+        request.website,
+        request.company,
+        10,
     )
 
     return leads

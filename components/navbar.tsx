@@ -1,7 +1,6 @@
 'use client'
 
 import { useState } from 'react'
-import Image from 'next/image'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Menu, X } from 'lucide-react'
@@ -19,17 +18,11 @@ export function Navbar() {
     <nav className="fixed top-0 w-full z-50 backdrop-blur-md bg-background/80 border-b border-border">
       <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
         {/* Logo */}
-        <Link href="/" className="flex items-center gap-3">
-          <Image
-            src="/intently-logo.png"
-            alt="intently-ai logo"
-            width={32}
-            height={32}
-            className="rounded"
-            priority
-          />
-          <span className="sr-only">intently-ai</span>
-        </Link>
+        <div className="font-bold text-xl tracking-tight">
+          <span className="bg-gradient-to-r from-violet-400 to-indigo-400 bg-clip-text text-transparent">
+            intently-ai
+          </span>
+        </div>
 
         {/* Desktop Navigation */}
         <div className="hidden md:flex items-center gap-8">

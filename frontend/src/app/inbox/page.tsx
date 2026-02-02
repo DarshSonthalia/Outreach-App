@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { auth, workspaces, inbox } from '@/lib/api';
+import { auth, workspaces, inbox, ApiError } from '@/lib/api';
 
 interface Reply {
     id: number;
@@ -93,6 +93,8 @@ export default function InboxPage() {
     const [draftLoading, setDraftLoading] = useState(false);
     const [activeDraft, setActiveDraft] = useState<any>(null); // To store current generated draft
     const [isEditingDraft, setIsEditingDraft] = useState(false);
+    const [replyDraftGenerationCount, setReplyDraftGenerationCount] = useState(0);
+    const [replyDraftGenerationLimit, setReplyDraftGenerationLimit] = useState(2);
 
     useEffect(() => {
         const init = async () => {
@@ -137,10 +139,14 @@ export default function InboxPage() {
                 const fullReply = await inbox.getReply(t, reply.id);
                 setThread(fullReply.thread || []);
                 setReplyDetails(fullReply);
+                setReplyDraftGenerationCount(fullReply.ai_reply_generation_count || 0);
+                setReplyDraftGenerationLimit(fullReply.ai_reply_generation_limit || 2);
             } catch (err) {
                 console.error('Error fetching thread:', err);
                 setThread([]);
                 setReplyDetails(null);
+                setReplyDraftGenerationCount(0);
+                setReplyDraftGenerationLimit(2);
             }
         };
 
@@ -155,11 +161,15 @@ export default function InboxPage() {
             const fullReply = await inbox.getReply(token, reply.id);
             setThread(fullReply.thread || []);
             setReplyDetails(fullReply);
+            setReplyDraftGenerationCount(fullReply.ai_reply_generation_count || 0);
+            setReplyDraftGenerationLimit(fullReply.ai_reply_generation_limit || 2);
             setReplyBody(''); // Reset reply body when switching
         } catch (err) {
             console.error('Error fetching thread:', err);
             setThread([]);
             setReplyDetails(null);
+            setReplyDraftGenerationCount(0);
+            setReplyDraftGenerationLimit(2);
         }
     };
 
@@ -189,6 +199,8 @@ export default function InboxPage() {
             const fullReply = await inbox.getReply(token, selectedReply.id);
             setThread(fullReply.thread || []);
             setReplyDetails(fullReply);
+            setReplyDraftGenerationCount(fullReply.ai_reply_generation_count || 0);
+            setReplyDraftGenerationLimit(fullReply.ai_reply_generation_limit || 2);
             setReplyBody('');
             setActiveDraft(null); // Clear draft after sending manual reply too?
         } catch (err: any) {
@@ -200,6 +212,10 @@ export default function InboxPage() {
 
     const handleGenerateDraft = async () => {
         if (!token || !selectedReply) return;
+        if (replyDraftGenerationCount >= replyDraftGenerationLimit) {
+            alert('You can only generate AI reply drafts twice for this conversation.');
+            return;
+        }
         setDraftLoading(true);
         try {
             // Find gmail_thread_id from the selected reply or thread
@@ -220,14 +236,26 @@ export default function InboxPage() {
 
             const fullData = await inbox.getReply(token, selectedReply.id);
             const threadId = fullData.gmail_thread_id;
+            if (!threadId) {
+                alert('Unable to generate draft: missing thread id for this conversation.');
+                setDraftLoading(false);
+                return;
+            }
 
             const draft = await inbox.generateDraft(token, threadId);
             setActiveDraft(draft);
             setReplyBody(draft.body || ""); // Pre-fill textarea
             setIsEditingDraft(true); // Enable edit mode concept
+            setReplyDraftGenerationCount(draft.generation_count ?? (replyDraftGenerationCount + 1));
+            setReplyDraftGenerationLimit(draft.generation_limit ?? replyDraftGenerationLimit);
 
         } catch (err: any) {
-            alert(`Failed to generate draft: ${err.message}`);
+            if (err instanceof ApiError && err.status === 429) {
+                setReplyDraftGenerationCount(replyDraftGenerationLimit);
+                alert('AI reply generation limit reached for this conversation.');
+            } else {
+                alert(`Failed to generate draft: ${err.message}`);
+            }
         }
         setDraftLoading(false);
     };
@@ -258,6 +286,8 @@ export default function InboxPage() {
             const fullReply = await inbox.getReply(token, selectedReply.id);
             setThread(fullReply.thread || []);
             setReplyDetails(fullReply);
+            setReplyDraftGenerationCount(fullReply.ai_reply_generation_count || 0);
+            setReplyDraftGenerationLimit(fullReply.ai_reply_generation_limit || 2);
             setReplyBody('');
             setActiveDraft(null);
             setIsEditingDraft(false);
@@ -576,10 +606,15 @@ export default function InboxPage() {
                                         display: 'flex',
                                         gap: '8px'
                                     }}>
+                                        {!activeDraft && (
+                                            <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginRight: '8px', alignSelf: 'center' }}>
+                                                AI drafts: {replyDraftGenerationCount}/{replyDraftGenerationLimit}
+                                            </span>
+                                        )}
                                         <button
                                             type="button"
                                             onClick={handleGenerateDraft}
-                                            disabled={draftLoading || sending}
+                                            disabled={draftLoading || sending || replyDraftGenerationCount >= replyDraftGenerationLimit}
                                             style={{
                                                 marginRight: '8px',
                                                 backgroundColor: '#e0e7ff',
@@ -594,7 +629,7 @@ export default function InboxPage() {
                                                 gap: '8px'
                                             }}
                                         >
-                                            {draftLoading ? '✨ Generating...' : '✨ AI Draft Reply'}
+                                            {draftLoading ? '✨ Generating...' : (replyDraftGenerationCount >= replyDraftGenerationLimit ? '✨ Limit Reached' : '✨ AI Draft Reply')}
                                         </button>
 
                                         {activeDraft && (

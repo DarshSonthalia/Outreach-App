@@ -23,6 +23,7 @@ from app.utils.rate_limit import check_rate_limit
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/campaigns", tags=["campaigns_ai"])
+MAX_CAMPAIGN_DRAFT_GENERATIONS = 2
 
 
 # =====================================================================
@@ -42,6 +43,15 @@ class DraftResponse(BaseModel):
     followup_body: Optional[str] = None
     personalization_vars_used: list[str]
     risky_phrases_found: list[str]
+    generation_count: int = 0
+    generation_limit: int = MAX_CAMPAIGN_DRAFT_GENERATIONS
+    remaining_generations: int = MAX_CAMPAIGN_DRAFT_GENERATIONS
+
+
+class DraftUsageResponse(BaseModel):
+    generation_count: int
+    generation_limit: int
+    remaining_generations: int
 
 
 class LintRequest(BaseModel):
@@ -102,6 +112,18 @@ async def ai_generate_draft(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Campaign not found",
+        )
+
+    # Hard cap per campaign to prevent repeated regenerate loops.
+    campaign_draft_count = db.query(Event).filter(
+        Event.entity_type == "campaign",
+        Event.entity_id == campaign_id,
+        Event.action.in_(["AI_DRAFT_GENERATED", "AI_DRAFT_FALLBACK"]),
+    ).count()
+    if campaign_draft_count >= MAX_CAMPAIGN_DRAFT_GENERATIONS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"AI email generation limit reached ({MAX_CAMPAIGN_DRAFT_GENERATIONS}).",
         )
     
     # Get workspace context
@@ -229,6 +251,9 @@ OUTPUT REQUIREMENTS:
             followup_body=draft.get("followup_body"),
             personalization_vars_used=draft.get("personalization_vars_used", []),
             risky_phrases_found=draft.get("risky_phrases_found", []),
+            generation_count=campaign_draft_count + 1,
+            generation_limit=MAX_CAMPAIGN_DRAFT_GENERATIONS,
+            remaining_generations=max(0, MAX_CAMPAIGN_DRAFT_GENERATIONS - (campaign_draft_count + 1)),
         )
 
     except LLMError as e:
@@ -255,6 +280,9 @@ OUTPUT REQUIREMENTS:
                 followup_body=fallback.get("followup_body"),
                 personalization_vars_used=fallback.get("personalization_vars_used", []),
                 risky_phrases_found=fallback.get("risky_phrases_found", []),
+                generation_count=campaign_draft_count + 1,
+                generation_limit=MAX_CAMPAIGN_DRAFT_GENERATIONS,
+                remaining_generations=max(0, MAX_CAMPAIGN_DRAFT_GENERATIONS - (campaign_draft_count + 1)),
             )
 
         raise HTTPException(
@@ -267,6 +295,35 @@ OUTPUT REQUIREMENTS:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error generating draft. Please try again.",
         )
+
+
+@router.get("/{campaign_id}/ai/draft-usage", response_model=DraftUsageResponse)
+async def ai_draft_usage(
+    campaign_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    campaign = db.query(Campaign).join(Workspace).filter(
+        Campaign.id == campaign_id,
+        Workspace.user_id == current_user.id,
+    ).first()
+    if not campaign:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Campaign not found",
+        )
+
+    generation_count = db.query(Event).filter(
+        Event.entity_type == "campaign",
+        Event.entity_id == campaign_id,
+        Event.action.in_(["AI_DRAFT_GENERATED", "AI_DRAFT_FALLBACK"]),
+    ).count()
+
+    return DraftUsageResponse(
+        generation_count=generation_count,
+        generation_limit=MAX_CAMPAIGN_DRAFT_GENERATIONS,
+        remaining_generations=max(0, MAX_CAMPAIGN_DRAFT_GENERATIONS - generation_count),
+    )
 
 
 @router.post("/{campaign_id}/ai/lint", response_model=LintResponse)

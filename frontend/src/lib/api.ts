@@ -6,6 +6,18 @@ interface ApiOptions {
     token?: string;
 }
 
+export class ApiError extends Error {
+    status: number;
+    detail: any;
+
+    constructor(message: string, status: number, detail: any = null) {
+        super(message);
+        this.name = 'ApiError';
+        this.status = status;
+        this.detail = detail;
+    }
+}
+
 async function apiRequest<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
     const { method = 'GET', body, token } = options;
 
@@ -28,13 +40,15 @@ async function apiRequest<T>(endpoint: string, options: ApiOptions = {}): Promis
 
     if (!response.ok) {
         let errorMsg = 'Request failed';
+        let errorDetail: any = null;
         try {
             const error = await response.json();
-            errorMsg = error.detail || error.message || errorMsg;
+            errorDetail = error?.detail ?? error?.message ?? null;
+            errorMsg = typeof errorDetail === 'string' ? errorDetail : errorMsg;
         } catch (e) {
             // Not JSON
         }
-        throw new Error(errorMsg);
+        throw new ApiError(errorMsg, response.status, errorDetail);
     }
 
     // Handle 204 No Content responses
@@ -262,6 +276,9 @@ export const campaignsAI = {
             body: { tone, length, include_followup: includeFollowup },
             token,
         }),
+
+    draftUsage: (token: string, campaignId: number) =>
+        apiRequest<any>(`/campaigns/${campaignId}/ai/draft-usage`, { token }),
 
     lintEmail: (token: string, campaignId: number, subject: string, body: string, followupSubject?: string, followupBody?: string) =>
         apiRequest<any>(`/campaigns/${campaignId}/ai/lint`, {

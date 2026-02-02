@@ -3,7 +3,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { auth, workspaces, campaigns, campaignsAI, mailboxes, leads } from '@/lib/api';
+import { auth, workspaces, campaigns, campaignsAI, mailboxes, leads, ApiError } from '@/lib/api';
+
+const EMAIL_GENERATION_LIMIT_DEFAULT = 2;
 
 export default function NewCampaignPage() {
     const router = useRouter();
@@ -46,6 +48,8 @@ export default function NewCampaignPage() {
     const [draftResponse, setDraftResponse] = useState<any>(null);
     const [lintResult, setLintResult] = useState<any>(null);
     const [lintLoading, setLintLoading] = useState(false);
+    const [emailGenerationCount, setEmailGenerationCount] = useState(0);
+    const [emailGenerationLimit, setEmailGenerationLimit] = useState(EMAIL_GENERATION_LIMIT_DEFAULT);
 
     // Add Leads Modal State
     const [showAddLeadsModal, setShowAddLeadsModal] = useState(false);
@@ -67,7 +71,7 @@ export default function NewCampaignPage() {
     const [leadGenResults, setLeadGenResults] = useState<any[]>([]);
     const [leadGenSelected, setLeadGenSelected] = useState<string[]>([]);
     const [leadGenSearched, setLeadGenSearched] = useState(false);
-    const [leadGenDesiredCount, setLeadGenDesiredCount] = useState(50);
+    const [leadGenDesiredCount, setLeadGenDesiredCount] = useState(20);
     const [leadGenCompanies, setLeadGenCompanies] = useState<any[]>([]);
     const [leadGenEnriching, setLeadGenEnriching] = useState<string | null>(null);
 
@@ -115,40 +119,134 @@ export default function NewCampaignPage() {
         }
     };
 
+    const goToLaunchWithLatestEmail = async (targetCampaignId?: number, notice?: string) => {
+        if (!token || !workspaceId) return;
+
+        let resolvedCampaignId = targetCampaignId || campaignId;
+        let latestSubject = subject;
+        let latestBody = body;
+        let latestFollowupEnabled = followupEnabled;
+        let latestFollowupDays = followupDays;
+        let latestFollowupSubject = followupSubject;
+        let latestFollowupBody = followupBody;
+
+        try {
+            if (!resolvedCampaignId) {
+                const campaignList = await campaigns.list(token, workspaceId);
+                const latestCampaign = campaignList.find((c: any) => c.subject && c.body) || campaignList[0];
+                if (latestCampaign) {
+                    resolvedCampaignId = latestCampaign.id;
+                    latestSubject = latestCampaign.subject || latestSubject;
+                    latestBody = latestCampaign.body || latestBody;
+                    latestFollowupEnabled = latestCampaign.followup_enabled ?? latestFollowupEnabled;
+                    latestFollowupDays = latestCampaign.followup_delay_days || latestFollowupDays;
+                    latestFollowupSubject = latestCampaign.followup_subject || latestFollowupSubject;
+                    latestFollowupBody = latestCampaign.followup_body || latestFollowupBody;
+                }
+            }
+
+            if (!resolvedCampaignId) {
+                throw new Error('No campaign available for launch preview');
+            }
+
+            if (latestSubject.trim() && latestBody.trim()) {
+                await campaigns.setEmails(token, resolvedCampaignId, {
+                    subject: latestSubject,
+                    body: latestBody,
+                    followup_enabled: latestFollowupEnabled,
+                    followup_delay_days: latestFollowupDays,
+                    followup_subject: latestFollowupSubject || undefined,
+                    followup_body: latestFollowupBody || undefined,
+                });
+            }
+
+            const previewData = await campaigns.preview(token, resolvedCampaignId);
+
+            setCampaignId(resolvedCampaignId);
+            setSubject(latestSubject);
+            setBody(latestBody);
+            setFollowupEnabled(latestFollowupEnabled);
+            setFollowupDays(latestFollowupDays);
+            setFollowupSubject(latestFollowupSubject);
+            setFollowupBody(latestFollowupBody);
+            setPreview(previewData);
+            setStep(4);
+
+            if (notice) {
+                alert(notice);
+            }
+        } catch (err) {
+            console.error('Failed to load launch page with latest email:', err);
+            if (notice) {
+                alert(notice);
+            }
+            setError('Reached generation limit. Please continue with the latest generated email.');
+        }
+    };
+
     const handleCreateCampaign = async () => {
         if (!token || !workspaceId || !selectedMailbox) return;
         setSaving(true);
         setError(null);
 
         try {
-            const customerInfo: any = {};
-            if (contextWhatYouSell.trim()) customerInfo.what_you_sell = contextWhatYouSell.trim();
-            if (contextTargetIndustry.trim()) customerInfo.target_industry = contextTargetIndustry.trim();
-            if (contextTargetRole.trim()) customerInfo.target_role = contextTargetRole.trim();
-            if (contextTargetRegion.trim()) customerInfo.target_region = contextTargetRegion.trim();
-            if (contextOfferType.trim()) customerInfo.offer_type = contextOfferType.trim();
-            if (contextPainPoints.trim()) customerInfo.pain_points = contextPainPoints.trim();
-            if (contextValueProp.trim()) customerInfo.value_prop = contextValueProp.trim();
-            if (contextSocialProof.trim()) customerInfo.social_proof = contextSocialProof.trim();
-            if (contextCtaPreference.trim()) customerInfo.cta_preference = contextCtaPreference.trim();
-            if (contextPersonalizationNotes.trim()) customerInfo.personalization_notes = contextPersonalizationNotes.trim();
-            if (customerInfoText.trim()) customerInfo.additional_context = customerInfoText.trim();
+            let targetCampaignId = campaignId;
+            let createdCampaignThisAttempt = false;
+            if (targetCampaignId && emailGenerationCount >= emailGenerationLimit) {
+                await goToLaunchWithLatestEmail(
+                    targetCampaignId,
+                    'You can only generate AI email copy twice. Redirecting to Launch with your latest email.'
+                );
+                return;
+            }
 
-            // Create campaign
-            const campaign = await campaigns.create(token, workspaceId, {
-                name,
-                mailbox_id: selectedMailbox,
-                lead_ids: selectedLeads,
-                customer_info: Object.keys(customerInfo).length ? customerInfo : undefined,
-            });
-            setCampaignId(campaign.id);
+            if (!targetCampaignId) {
+                const customerInfo: any = {};
+                if (contextWhatYouSell.trim()) customerInfo.what_you_sell = contextWhatYouSell.trim();
+                if (contextTargetIndustry.trim()) customerInfo.target_industry = contextTargetIndustry.trim();
+                if (contextTargetRole.trim()) customerInfo.target_role = contextTargetRole.trim();
+                if (contextTargetRegion.trim()) customerInfo.target_region = contextTargetRegion.trim();
+                if (contextOfferType.trim()) customerInfo.offer_type = contextOfferType.trim();
+                if (contextPainPoints.trim()) customerInfo.pain_points = contextPainPoints.trim();
+                if (contextValueProp.trim()) customerInfo.value_prop = contextValueProp.trim();
+                if (contextSocialProof.trim()) customerInfo.social_proof = contextSocialProof.trim();
+                if (contextCtaPreference.trim()) customerInfo.cta_preference = contextCtaPreference.trim();
+                if (contextPersonalizationNotes.trim()) customerInfo.personalization_notes = contextPersonalizationNotes.trim();
+                if (customerInfoText.trim()) customerInfo.additional_context = customerInfoText.trim();
+
+                // Create campaign once; subsequent back/continue regenerates copy on same campaign.
+                const campaign = await campaigns.create(token, workspaceId, {
+                    name,
+                    mailbox_id: selectedMailbox,
+                    lead_ids: selectedLeads,
+                    customer_info: Object.keys(customerInfo).length ? customerInfo : undefined,
+                });
+                targetCampaignId = campaign.id;
+                createdCampaignThisAttempt = true;
+                setCampaignId(campaign.id);
+                setEmailGenerationCount(0);
+                try {
+                    const usage = await campaignsAI.draftUsage(token, campaign.id);
+                    if (typeof usage?.generation_count === 'number') {
+                        setEmailGenerationCount(usage.generation_count);
+                    }
+                    if (typeof usage?.generation_limit === 'number') {
+                        setEmailGenerationLimit(usage.generation_limit);
+                    }
+                } catch (usageErr) {
+                    console.error('Failed to fetch draft usage:', usageErr);
+                }
+            }
+            if (!targetCampaignId) {
+                throw new Error('Failed to resolve campaign for email generation');
+            }
 
             // Auto-generate email copy
             setGeneratingCopy(true);
-                try {
+            try {
                 const draft = await campaignsAI.generateDraft(
                     token,
-                    campaign.id,
+                    targetCampaignId,
                     'friendly',
                     'medium',
                     true
@@ -158,10 +256,28 @@ export default function NewCampaignPage() {
                 setBody(draft.body);
                 if (draft.followup_subject) setFollowupSubject(draft.followup_subject);
                 if (draft.followup_body) setFollowupBody(draft.followup_body);
+                if (typeof draft.generation_count === 'number') {
+                    setEmailGenerationCount(draft.generation_count);
+                } else {
+                    setEmailGenerationCount((prev) => Math.min(prev + 1, emailGenerationLimit));
+                }
+                if (typeof draft.generation_limit === 'number') {
+                    setEmailGenerationLimit(draft.generation_limit);
+                }
             } catch (draftErr: any) {
                 console.error('Error generating copy:', draftErr);
+                if (draftErr instanceof ApiError && draftErr.status === 429) {
+                    setEmailGenerationCount(emailGenerationLimit);
+                    await goToLaunchWithLatestEmail(
+                        targetCampaignId,
+                        'You can only generate AI email copy twice. Redirecting to Launch with your latest email.'
+                    );
+                    return;
+                }
                 const draftErrMsg = draftErr?.detail || draftErr?.message || 'Failed to generate email copy';
-                setError(`Campaign created, but failed to generate copy: ${draftErrMsg}`);
+                setError(createdCampaignThisAttempt
+                    ? `Campaign created, but failed to generate copy: ${draftErrMsg}`
+                    : `Failed to regenerate email copy: ${draftErrMsg}`);
                 // Still proceed to Step 3 even if generation fails
             } finally {
                 setGeneratingCopy(false);
@@ -172,8 +288,9 @@ export default function NewCampaignPage() {
             console.error('Error creating campaign:', err);
             const errorMsg = err?.detail || err?.message || 'Failed to create campaign';
             setError(errorMsg);
+        } finally {
+            setSaving(false);
         }
-        setSaving(false);
     };
 
     const handleSetEmails = async () => {
@@ -345,7 +462,8 @@ export default function NewCampaignPage() {
             const results = res?.leads || [];
             setLeadGenResults(results);
             setLeadGenCompanies(res?.companies || []);
-            setLeadGenSelected(results.filter((lead: any) => !(lead.missing_fields?.length)).map((lead: any) => lead.email));
+            // Select all found leads by default so users can quickly import 10-20 contacts.
+            setLeadGenSelected(results.map((lead: any) => lead.email));
         } catch (err) {
             alert('Lead gen search failed.');
         }
@@ -617,6 +735,9 @@ export default function NewCampaignPage() {
                         <p style={{ color: 'var(--text-secondary)', marginBottom: '20px' }}>
                             {selectedLeads.length} of {leadList.length} selected
                         </p>
+                        <p style={{ color: 'var(--text-muted)', marginBottom: '12px', fontSize: '12px' }}>
+                            AI email generations used: {emailGenerationCount}/{emailGenerationLimit}
+                        </p>
 
                         {leadList.length === 0 ? (
                             <div style={{ textAlign: 'center', padding: '32px', border: '1px dashed var(--border-color)', borderRadius: '8px' }}>
@@ -694,6 +815,9 @@ export default function NewCampaignPage() {
                         <h2 style={{ fontSize: '18px', marginBottom: '24px' }}>
                             ✨ AI-Generated Email Content
                         </h2>
+                        <div style={{ marginBottom: '12px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                            AI email generations used: {emailGenerationCount}/{emailGenerationLimit}
+                        </div>
 
                         {error && (
                             <div className="alert alert-danger" style={{ marginBottom: '24px' }}>
@@ -1124,10 +1248,13 @@ export default function NewCampaignPage() {
                                         <input
                                             className="input"
                                             type="number"
-                                            min={1}
-                                            max={200}
+                                            min={10}
+                                            max={20}
                                             value={leadGenDesiredCount}
-                                            onChange={(e) => setLeadGenDesiredCount(Number(e.target.value) || 50)}
+                                            onChange={(e) => {
+                                                const parsed = Number(e.target.value) || 20;
+                                                setLeadGenDesiredCount(Math.max(10, Math.min(20, parsed)));
+                                            }}
                                         />
                                     </div>
                                 </div>
