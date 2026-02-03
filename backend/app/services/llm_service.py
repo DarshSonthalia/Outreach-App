@@ -175,6 +175,7 @@ def generate_campaign_draft(
     target_role: str,
     offer_type: str,
     target_region: str,
+    founder_name: Optional[str] = None,
     pain_points: Optional[str] = None,
     value_prop: Optional[str] = None,
     social_proof: Optional[str] = None,
@@ -209,6 +210,8 @@ def generate_campaign_draft(
         logger.info("SMOKE_TEST_MODE enabled - returning canned draft (no OpenAI call)")
         return _smoke_test_draft()
     extra_lines = []
+    if founder_name:
+        extra_lines.append(f"- Sender Name: {founder_name}")
     if pain_points:
         extra_lines.append(f"- Pain points: {pain_points}")
     if value_prop:

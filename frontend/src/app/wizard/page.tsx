@@ -17,7 +17,14 @@ const WIZARD_STEPS: Message[] = [
     {
         id: 1,
         type: 'bot',
-        content: "Welcome! Let's set up your email outreach. First, what do you sell?",
+        content: "Welcome! Let's set up your email outreach. First, what is your name?",
+        inputType: 'text',
+        action: 'founder_name',
+    },
+    {
+        id: 2,
+        type: 'bot',
+        content: "Nice to meet you! What do you sell?",
         inputType: 'text',
         action: 'what_you_sell',
     },
@@ -204,6 +211,7 @@ export default function WizardPage() {
             try {
                 // Fix: Only send fields that the backend expects (WorkspaceSetup schema)
                 const payload = {
+                    founder_name: newSetupData.founder_name || '',
                     what_you_sell: newSetupData.what_you_sell || '',
                     target_industry: newSetupData.target_industry || '',
                     target_role: newSetupData.target_role || '',

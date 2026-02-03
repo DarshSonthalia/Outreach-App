@@ -50,6 +50,7 @@ class Workspace(Base):
     name = Column(String(255), nullable=False)
     
     # Wizard answers stored as JSON
+    founder_name = Column(String(255), nullable=True)
     what_you_sell = Column(Text, nullable=True)
     target_industry = Column(String(255), nullable=True)
     target_role = Column(String(255), nullable=True)

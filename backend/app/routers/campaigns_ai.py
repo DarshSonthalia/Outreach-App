@@ -136,6 +136,7 @@ async def ai_generate_draft(
     target_role = wizard_answers.get("target_role") or getattr(workspace, "target_role", "decision maker")
     offer_type = wizard_answers.get("offer_type") or getattr(workspace, "offer_type", "consultation")
     target_region = wizard_answers.get("target_region") or getattr(workspace, "target_region", "global")
+    founder_name = wizard_answers.get("founder_name") or getattr(workspace, "founder_name", None)
 
     pain_points = None
     value_prop = None
@@ -214,6 +215,7 @@ OUTPUT REQUIREMENTS:
             target_role=target_role,
             offer_type=offer_type,
             target_region=target_region,
+            founder_name=founder_name,
             pain_points=pain_points,
             value_prop=value_prop,
             social_proof=social_proof,

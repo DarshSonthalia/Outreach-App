@@ -111,6 +111,7 @@ async def update_workspace_setup(
         )
     
     # Update fields from setup data
+    workspace.founder_name = setup_data.founder_name
     workspace.what_you_sell = setup_data.what_you_sell
     workspace.target_industry = setup_data.target_industry
     workspace.target_role = setup_data.target_role

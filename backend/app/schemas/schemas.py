@@ -45,6 +45,7 @@ class WorkspaceCreate(BaseModel):
 
 class WorkspaceSetup(BaseModel):
     """Wizard answers for workspace setup."""
+    founder_name: Optional[str] = None
     what_you_sell: Optional[str] = None
     target_industry: Optional[str] = None
     target_role: Optional[str] = None
@@ -60,6 +61,7 @@ class WorkspaceSetup(BaseModel):
 class WorkspaceResponse(BaseModel):
     id: int
     name: str
+    founder_name: Optional[str]
     what_you_sell: Optional[str]
     target_industry: Optional[str]
     target_role: Optional[str]
