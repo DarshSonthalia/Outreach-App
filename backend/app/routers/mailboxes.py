@@ -12,9 +12,9 @@ from app.schemas import MailboxResponse, OAuthUrlResponse
 from app.utils.dependencies import get_current_user
 from app.services.gmail_service import GmailService
 from app.services.domain_service import DomainService
+from app.enums import CampaignStatus, MailboxStatus
 import logging
 import traceback
-from fastapi import APIRouter, Depends, HTTPException, status, Query
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -192,18 +192,28 @@ async def oauth_callback(
         
         # Redirect to frontend success page
         from app.config import settings
-        return RedirectResponse(
-            url=f"{settings.frontend_url}/app/dashboard?step=inbox-connected&email={email}"
-        )
+        
+        # Robust path construction: Ensure /app is present exactly once
+        base_url = settings.frontend_url.rstrip("/")
+        if not base_url.endswith("/app"):
+            base_url += "/app"
+            
+        success_url = f"{base_url}/dashboard?step=inbox-connected&email={email}"
+        logger.info(f"OAuth Callback: Redirecting to success: {success_url}")
+        return RedirectResponse(url=success_url)
         
     except Exception as e:
         logger.error(f"OAuth Callback Error: {str(e)}")
         logger.error(traceback.format_exc())
         
         from app.config import settings
-        redirect_url = f"{settings.frontend_url}/app/dashboard?step=inbox-error&error={str(e)}"
-        logger.info(f"OAuth Callback: Redirecting to error page: {redirect_url}")
-        return RedirectResponse(url=redirect_url)
+        base_url = settings.frontend_url.rstrip("/")
+        if not base_url.endswith("/app"):
+            base_url += "/app"
+            
+        error_url = f"{base_url}/dashboard?step=inbox-error&error={str(e)}"
+        logger.info(f"OAuth Callback: Redirecting to error: {error_url}")
+        return RedirectResponse(url=error_url)
 
 
 @router.get("/", response_model=List[MailboxResponse])
