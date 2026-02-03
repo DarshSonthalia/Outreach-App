@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '20260203_0001'
-down_revision = '20260110_0004_add_campaign_customer_info' # Referring to the file I saw earlier, assuming the revision ID inside it matches its filename part or consistent with previous
+down_revision = '007_update_booking_events'
 branch_labels = None
 depends_on = None
 
