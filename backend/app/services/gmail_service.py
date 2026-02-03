@@ -102,9 +102,15 @@ class GmailService:
         Tokens are encrypted for secure storage.
         """
         flow = GmailService.get_oauth_flow()
-        flow.fetch_token(code=code)
+        logger.info(f"GmailService: Fetching token with redirect_uri: {settings.google_redirect_uri}")
+        try:
+            flow.fetch_token(code=code)
+        except Exception as e:
+            logger.error(f"GmailService: fetch_token failed: {str(e)}")
+            raise
         
         credentials = flow.credentials
+        logger.info(f"GmailService: Token fetched. Refresh token present: {bool(credentials.refresh_token)}")
         
         # Encrypt tokens for storage
         access_encrypted, refresh_encrypted = encrypt_oauth_tokens(

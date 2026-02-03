@@ -12,8 +12,11 @@ from app.schemas import MailboxResponse, OAuthUrlResponse
 from app.utils.dependencies import get_current_user
 from app.services.gmail_service import GmailService
 from app.services.domain_service import DomainService
-from app.enums import CampaignStatus, MailboxStatus
+import logging
+import traceback
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -110,15 +113,19 @@ async def oauth_callback(
     
     workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not workspace:
+        logger.error(f"OAuth Callback: Workspace {workspace_id} not found")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Workspace not found"
         )
     
+    logger.info(f"OAuth Callback: Starting token exchange for workspace {workspace_id}")
     try:
         # Exchange code for tokens
         access_encrypted, refresh_encrypted, expiry, email = \
             GmailService.exchange_code_for_tokens(code)
+        
+        logger.info(f"OAuth Callback: Successfully exchanged code for {email}")
         
         # Check if mailbox already exists
         existing = db.query(Mailbox).filter(
@@ -186,14 +193,17 @@ async def oauth_callback(
         # Redirect to frontend success page
         from app.config import settings
         return RedirectResponse(
-            url=f"{settings.frontend_url}/wizard?step=inbox-connected&email={email}"
+            url=f"{settings.frontend_url}/app/dashboard?step=inbox-connected&email={email}"
         )
         
     except Exception as e:
+        logger.error(f"OAuth Callback Error: {str(e)}")
+        logger.error(traceback.format_exc())
+        
         from app.config import settings
-        return RedirectResponse(
-            url=f"{settings.frontend_url}/wizard?step=inbox-error&error={str(e)}"
-        )
+        redirect_url = f"{settings.frontend_url}/app/dashboard?step=inbox-error&error={str(e)}"
+        logger.info(f"OAuth Callback: Redirecting to error page: {redirect_url}")
+        return RedirectResponse(url=redirect_url)
 
 
 @router.get("/", response_model=List[MailboxResponse])

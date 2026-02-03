@@ -163,9 +163,9 @@ Hard rules:
 - No pressure language, no urgency, no "quick call", no meeting requests.
 - Keep it short and plain. Prefer 60–120 words for the body.
 - The FIRST email must be inquisitive and light-touch: lead with a question and aim for a foot-in-the-door reply.
-- Use ONLY these variables if relevant: {{first_name}}, {{company}}, {{title}}.
-- If a variable is available, include one light-touch personalization at most. Do not force it.
-- If unsure, omit personalization entirely.
+- CRITICAL: DO NOT use any placeholders or variables like {{first_name}}, {{company}}, {{title}}, [Your Name], or [Sender Name]. 
+- Write the email as a ready-to-send message. If you don't know a name or company, write in a way that doesn't require it (e.g., "Hi there" or "to your team").
+- Use the "Sender Name" from CONTEXT for the signature. If not provided, use a generic "The Team".
 Output MUST follow the JSON schema strictly."""
 
 
@@ -210,8 +210,6 @@ def generate_campaign_draft(
         logger.info("SMOKE_TEST_MODE enabled - returning canned draft (no OpenAI call)")
         return _smoke_test_draft()
     extra_lines = []
-    if founder_name:
-        extra_lines.append(f"- Sender Name: {founder_name}")
     if pain_points:
         extra_lines.append(f"- Pain points: {pain_points}")
     if value_prop:
@@ -230,6 +228,7 @@ def generate_campaign_draft(
         extra_context = "\n" + extra_context
 
     input_text = f"""CONTEXT (do not invent details):
+- Sender Name: {founder_name or 'N/A'}
 - What we sell: {what_you_sell}
 - Target industry: {target_industry}
 - Target role: {target_role}
@@ -261,11 +260,11 @@ OUTPUT REQUIREMENTS:
 # Smoke-test helper: when set, avoid real OpenAI calls and return a deterministic draft
 def _smoke_test_draft() -> Dict[str, Any]:
     return {
-        "subject": "Quick question about your {{company}} data",
-        "body": "Hi {{first_name}},\n\nI help teams using analytics tools get clearer product insights without extra engineering. Would you be open to a short chat to see if there's a fit?\n\nBest,\nThe Team",
+        "subject": "Quick question about your team's data",
+        "body": "Hi there,\n\nI help teams get clearer product insights without extra engineering. Would you be open to a short chat to see if there's a fit?\n\nBest,\nThe Team",
         "followup_subject": "Following up on my note",
-        "followup_body": "Hey {{first_name}},\n\nJust checking in — did you see my note about analytics?\n\nThanks,",
-        "personalization_vars_used": ["{{first_name}}", "{{company}}"],
+        "followup_body": "Hi,\n\nJust checking in — did you see my note about analytics?\n\nThanks,",
+        "personalization_vars_used": [],
         "risky_phrases_found": [],
     }
 
