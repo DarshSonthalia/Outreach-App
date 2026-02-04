@@ -1215,6 +1215,23 @@ export default function NewCampaignPage() {
 
                         {addLeadsTab === 'leadgen' && (
                             <div>
+                                <div style={{
+                                    background: '#fef9c3',
+                                    border: '1px solid #facc15',
+                                    borderRadius: '8px',
+                                    padding: '12px 16px',
+                                    marginBottom: '20px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '12px',
+                                    color: '#854d0e'
+                                }}>
+                                    <span style={{ fontSize: '20px' }}>🚀</span>
+                                    <div>
+                                        <div style={{ fontWeight: '600', fontSize: '14px' }}>Lead gen coming soon</div>
+                                        <div style={{ fontSize: '13px', opacity: 0.9 }}>Powered by Apollo API</div>
+                                    </div>
+                                </div>
                                 <p style={{ marginBottom: '16px', color: 'var(--text-secondary)' }}>
                                     Search the web for companies and extract contacts with full names and titles.
                                 </p>
@@ -1318,27 +1335,27 @@ export default function NewCampaignPage() {
                                     <div style={{ marginBottom: '16px' }}>
                                         <div style={{ fontWeight: 600, marginBottom: '8px' }}>Companies</div>
                                         <div style={{ display: 'grid', gap: '8px' }}>
-                                        {leadGenCompanies.map((company) => {
-                                            const companyKey = company.website || company.source_url;
-                                            const isEnriching = leadGenEnriching === companyKey;
-                                            return (
-                                                <div key={companyKey} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
-                                                    <div>
-                                                        <div style={{ fontWeight: 500 }}>{company.company}</div>
-                                                        <div style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
-                                                            {companyKey}
+                                            {leadGenCompanies.map((company) => {
+                                                const companyKey = company.website || company.source_url;
+                                                const isEnriching = leadGenEnriching === companyKey;
+                                                return (
+                                                    <div key={companyKey} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                                                        <div>
+                                                            <div style={{ fontWeight: 500 }}>{company.company}</div>
+                                                            <div style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+                                                                {companyKey}
+                                                            </div>
                                                         </div>
+                                                        <button
+                                                            className="btn btn-secondary btn-sm"
+                                                            disabled={isEnriching || !companyKey}
+                                                            onClick={() => handleLeadGenEnrich(company.company, companyKey)}
+                                                        >
+                                                            {isEnriching ? 'Enriching...' : 'Enrich Contacts'}
+                                                        </button>
                                                     </div>
-                                                    <button
-                                                        className="btn btn-secondary btn-sm"
-                                                        disabled={isEnriching || !companyKey}
-                                                        onClick={() => handleLeadGenEnrich(company.company, companyKey)}
-                                                    >
-                                                        {isEnriching ? 'Enriching...' : 'Enrich Contacts'}
-                                                    </button>
-                                                </div>
-                                            );
-                                        })}
+                                                );
+                                            })}
                                         </div>
                                     </div>
                                 )}
