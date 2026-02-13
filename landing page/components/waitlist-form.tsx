@@ -62,6 +62,7 @@ export function WaitlistForm() {
         leadStrategy: '',
       })
     } catch (err) {
+      console.error('Waitlist submission error:', err)
       setError(err instanceof Error ? err.message : 'An error occurred')
       setState('error')
     }

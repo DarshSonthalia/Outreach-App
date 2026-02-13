@@ -38,13 +38,7 @@ export const metadata: Metadata = {
     ],
     apple: '/apple-icon.png',
   },
-  viewport: {
-    width: 'device-width',
-    initialScale: 1,
-    maximumScale: 5,
-    userScalable: true,
-    themeColor: '#0a0a0f',
-  },
+  themeColor: '#0a0a0f',
 }
 
 export default function RootLayout({
@@ -53,7 +47,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className="dark scroll-smooth">
+    <html lang="en" className="dark scroll-smooth" suppressHydrationWarning>
       <body className={`font-sans antialiased bg-background text-foreground`}>
         {children}
         <Analytics />

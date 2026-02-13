@@ -3,6 +3,8 @@ import { promises as fs } from 'fs'
 import path from 'path'
 import { Resend } from 'resend'
 
+export const dynamic = 'force-dynamic'
+
 interface WaitlistEntry {
   id: string
   fullName: string
@@ -26,7 +28,7 @@ async function sendAdminNotification(entry: WaitlistEntry) {
       return
     }
 
-    const leadStrategyText = entry.leadStrategy 
+    const leadStrategyText = entry.leadStrategy
       ? `Lead Strategy: ${entry.leadStrategy.replace('-', ' ')}`
       : 'Lead Strategy: Not specified'
 
