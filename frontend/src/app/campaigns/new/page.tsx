@@ -41,6 +41,7 @@ export default function NewCampaignPage() {
     const [contextSocialProof, setContextSocialProof] = useState('');
     const [contextCtaPreference, setContextCtaPreference] = useState('');
     const [contextPersonalizationNotes, setContextPersonalizationNotes] = useState('');
+    const [contextFounderName, setContextFounderName] = useState('');
 
     const [campaignId, setCampaignId] = useState<number | null>(null);
     const [preview, setPreview] = useState<any>(null);
@@ -93,6 +94,13 @@ export default function NewCampaignPage() {
                 }
                 const wsId = userWorkspaces[0].id;
                 setWorkspaceId(wsId);
+                const ws = userWorkspaces[0];
+                if (ws.founder_name) setContextFounderName(ws.founder_name);
+                if (ws.what_you_sell) setContextWhatYouSell(ws.what_you_sell);
+                if (ws.target_industry) setContextTargetIndustry(ws.target_industry);
+                if (ws.target_role) setContextTargetRole(ws.target_role);
+                if (ws.target_region) setContextTargetRegion(ws.target_region);
+                if (ws.offer_type) setContextOfferType(ws.offer_type);
 
                 const mboxes = await mailboxes.list(storedToken, wsId);
                 setMailboxList(mboxes);
@@ -213,6 +221,7 @@ export default function NewCampaignPage() {
                 if (contextSocialProof.trim()) customerInfo.social_proof = contextSocialProof.trim();
                 if (contextCtaPreference.trim()) customerInfo.cta_preference = contextCtaPreference.trim();
                 if (contextPersonalizationNotes.trim()) customerInfo.personalization_notes = contextPersonalizationNotes.trim();
+                if (contextFounderName.trim()) customerInfo.founder_name = contextFounderName.trim();
                 if (customerInfoText.trim()) customerInfo.additional_context = customerInfoText.trim();
 
                 // Create campaign once; subsequent back/continue regenerates copy on same campaign.
@@ -656,6 +665,13 @@ export default function NewCampaignPage() {
                                 Campaign context (used for AI prompt)
                             </label>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                                <input
+                                    type="text"
+                                    className="input"
+                                    value={contextFounderName}
+                                    onChange={(e) => setContextFounderName(e.target.value)}
+                                    placeholder="Sender Name (your name)"
+                                />
                                 <input
                                     type="text"
                                     className="input"

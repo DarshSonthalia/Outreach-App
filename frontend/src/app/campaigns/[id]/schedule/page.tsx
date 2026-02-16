@@ -104,7 +104,7 @@ export default function CampaignSchedulePage({ params }: { params: { id: string 
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                         <div className="lg:col-span-2">
                             <div className="border border-gray-800 rounded-xl overflow-hidden">
-                                <div className="grid grid-cols-5 gap-2 bg-gray-900 text-xs uppercase tracking-wide text-gray-400 px-4 py-3">
+                                <div className="grid grid-cols-[1.8fr_1.2fr_0.4fr_0.8fr_0.8fr] gap-2 bg-gray-900 text-xs uppercase tracking-wide text-gray-400 px-4 py-3">
                                     <div>Lead</div>
                                     <div>Next Send</div>
                                     <div>Step</div>
@@ -115,11 +115,11 @@ export default function CampaignSchedulePage({ params }: { params: { id: string 
                                     <div
                                         key={lead.campaign_lead_id}
                                         onClick={() => setSelected(lead)}
-                                        className={`grid grid-cols-5 gap-2 px-4 py-3 border-t border-gray-800 cursor-pointer ${lead.followup_state !== 'SCHEDULED' ? 'opacity-60' : ''}`}
+                                        className={`grid grid-cols-[1.8fr_1.2fr_0.4fr_0.8fr_0.8fr] gap-2 px-4 py-3 border-t border-gray-800 cursor-pointer ${lead.followup_state !== 'SCHEDULED' ? 'opacity-60' : ''}`}
                                     >
-                                        <div>
-                                            <div className="font-medium">{lead.lead_name || lead.lead_email}</div>
-                                            <div className="text-xs text-gray-500">{lead.lead_email}</div>
+                                        <div className="overflow-hidden">
+                                            <div className="font-medium truncate" title={lead.lead_name || lead.lead_email}>{lead.lead_name || lead.lead_email}</div>
+                                            <div className="text-xs text-gray-500 truncate" title={lead.lead_email}>{lead.lead_email}</div>
                                         </div>
                                         <div className="text-sm text-gray-300">{formatDateTime(lead.next_scheduled_at)}</div>
                                         <div className="text-sm text-gray-300">{lead.current_step}/{lead.max_followups}</div>

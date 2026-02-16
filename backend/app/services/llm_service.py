@@ -163,10 +163,15 @@ Hard rules:
 - No pressure language, no urgency, no "quick call", no meeting requests.
 - Keep it short and plain. Prefer 60–120 words for the body.
 - The FIRST email must be inquisitive and light-touch: lead with a question and aim for a foot-in-the-door reply.
-- CRITICAL: DO NOT use any placeholders or variables like {{first_name}}, {{company}}, {{title}}, [Your Name], or [Sender Name]. 
+- CRITICAL: DO NOT use any placeholders or variables like {{first_name}}, {{company}}, {{title}}, [Your Name], or [Sender Name].
 - Write the email as a ready-to-send message. If you don't know a name or company, write in a way that doesn't require it (e.g., "Hi there" or "to your team").
-- Use the "Sender Name" from CONTEXT for the signature. If not provided, use a generic "The Team".
-Output MUST follow the JSON schema strictly."""
+- SIGNATURE RULES:
+    1. Look at the "Sender Name" in CONTEXT.
+    2. If Sender Name is provided (and not "N/A"), you MUST use it as the signature (e.g., "Best,\n[Sender Name]").
+    3. If Sender Name is "N/A" or missing, use "The Team".
+    4. NEVER use [Your Name] or other placeholders.
+    5. Personalization is ONLY allowed for the signature; do not hallucinate recipient names.
+Output MUST follow the JSON schema strictly. """
 
 
 def generate_campaign_draft(
@@ -205,10 +210,9 @@ def generate_campaign_draft(
     Raises:
         LLMError on timeout, API error, or invalid output
     """
-    # If running a local smoke test, skip external OpenAI calls and return a canned draft
     if os.getenv("SMOKE_TEST_MODE") == "1":
         logger.info("SMOKE_TEST_MODE enabled - returning canned draft (no OpenAI call)")
-        return _smoke_test_draft()
+        return _smoke_test_draft(founder_name=founder_name)
     extra_lines = []
     if pain_points:
         extra_lines.append(f"- Pain points: {pain_points}")
@@ -258,12 +262,13 @@ OUTPUT REQUIREMENTS:
 
 
 # Smoke-test helper: when set, avoid real OpenAI calls and return a deterministic draft
-def _smoke_test_draft() -> Dict[str, Any]:
+def _smoke_test_draft(founder_name: Optional[str] = None) -> Dict[str, Any]:
+    signature = founder_name if founder_name and founder_name != 'N/A' else "The Team"
     return {
         "subject": "Quick question about your team's data",
-        "body": "Hi there,\n\nI help teams get clearer product insights without extra engineering. Would you be open to a short chat to see if there's a fit?\n\nBest,\nThe Team",
+        "body": f"Hi there,\n\nI help teams get clearer product insights without extra engineering. Would you be open to a short chat to see if there's a fit?\n\nBest,\n{signature}",
         "followup_subject": "Following up on my note",
-        "followup_body": "Hi,\n\nJust checking in — did you see my note about analytics?\n\nThanks,",
+        "followup_body": f"Hi,\n\nJust checking in — did you see my note about analytics?\n\nThanks,\n{signature}",
         "personalization_vars_used": [],
         "risky_phrases_found": [],
     }

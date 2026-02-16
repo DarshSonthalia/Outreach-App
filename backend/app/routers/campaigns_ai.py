@@ -172,6 +172,11 @@ async def ai_generate_draft(
             cta_preference = campaign_info.get("cta_preference") or cta_preference
             personalization_notes = campaign_info.get("personalization_notes") or personalization_notes
             additional_context = campaign_info.get("additional_context") or additional_context
+            founder_name = campaign_info.get("founder_name") or founder_name
+        
+        # Final cleanup for founder_name to avoid empty string issues
+        if founder_name and isinstance(founder_name, str) and not founder_name.strip():
+            founder_name = None
     except Exception:
         pass
     
@@ -183,6 +188,7 @@ async def ai_generate_draft(
     try:
         input_preview = f"""CONTEXT (do not invent details):
 - What we sell: {what_you_sell}
+- Sender Name: {founder_name or 'n/a'}
 - Target industry: {target_industry}
 - Target role: {target_role}
 - Offer type: {offer_type}
@@ -264,7 +270,7 @@ OUTPUT REQUIREMENTS:
         # campaign creation flow doesn't fail for local/dev environments.
         if not os.getenv("OPENAI_API_KEY"):
             logger.info("OPENAI_API_KEY missing — returning canned draft fallback")
-            fallback = _smoke_test_draft()
+            fallback = _smoke_test_draft(founder_name=founder_name)
             event = Event(
                 entity_type="campaign",
                 entity_id=campaign_id,
