@@ -188,6 +188,13 @@ export const leads = {
             body: { company, website },
             token,
         }),
+
+    importManual: (token: string, workspaceId: number, leads: any[]) =>
+        apiRequest<any[]>(`/leads/manual?workspace_id=${workspaceId}`, {
+            method: 'POST',
+            body: { leads },
+            token,
+        }),
 };
 
 // Campaigns

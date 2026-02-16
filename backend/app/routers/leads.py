@@ -12,7 +12,7 @@ from app.schemas import (
     LeadResponse, CSVColumnMapping, CSVUploadResponse,
     WebSourceRequest, WebSourceResponse,
     LeadGenRequest, LeadGenSearchResponse, LeadGenImportRequest,
-    LeadGenEnrichRequest, LeadGenCandidate
+    LeadManualImportRequest, LeadGenEnrichRequest, LeadGenCandidate
 )
 from app.utils.dependencies import get_current_user
 from app.services.lead_service import LeadService
@@ -415,6 +415,77 @@ async def leadgen_enrich(
     )
 
     return leads
+
+
+@router.post("/manual", response_model=List[LeadResponse])
+async def manual_import(
+    workspace_id: int,
+    request: LeadManualImportRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually import leads into the workspace.
+    """
+    workspace = db.query(Workspace).filter(
+        Workspace.id == workspace_id,
+        Workspace.user_id == current_user.id
+    ).first()
+
+    if not workspace:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace not found"
+        )
+
+    suppressed_emails = set(
+        entry.email.lower() for entry in
+        db.query(SuppressionEntry).filter(
+            SuppressionEntry.workspace_id == workspace_id
+        ).all()
+    )
+
+    created_leads = []
+    for lead_data in request.leads:
+        email_lower = lead_data.email.lower()
+        if email_lower in suppressed_emails:
+            continue
+
+        existing = db.query(Lead).filter(
+            Lead.workspace_id == workspace_id,
+            Lead.email == lead_data.email
+        ).first()
+        if existing:
+            continue
+
+        # Basic email validation check again just in case
+        is_valid, normalized_email = LeadService.validate_email_address(lead_data.email)
+        if not is_valid:
+            continue
+
+        is_role = LeadService.is_role_email(normalized_email)
+
+        lead = Lead(
+            workspace_id=workspace_id,
+            email=normalized_email,
+            first_name=lead_data.first_name,
+            last_name=lead_data.last_name,
+            company=lead_data.company,
+            title=lead_data.title,
+            is_valid_email=True,
+            is_role_email=is_role,
+            source="manual",
+            source_url=None,
+        )
+        db.add(lead)
+        created_leads.append(lead)
+
+    db.commit()
+
+    for lead in created_leads:
+        db.refresh(lead)
+
+    return created_leads
 
 
 @router.delete("/{lead_id}", status_code=status.HTTP_204_NO_CONTENT)

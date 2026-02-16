@@ -53,7 +53,7 @@ export default function NewCampaignPage() {
 
     // Add Leads Modal State
     const [showAddLeadsModal, setShowAddLeadsModal] = useState(false);
-    const [addLeadsTab, setAddLeadsTab] = useState<'csv' | 'source' | 'leadgen'>('csv');
+    const [addLeadsTab, setAddLeadsTab] = useState<'csv' | 'source' | 'leadgen' | 'manual'>('csv');
     const [csvFile, setCsvFile] = useState<File | null>(null);
     const [csvMapping, setCsvMapping] = useState<any>(null); // Columns from backend
     const [csvColumns, setCsvColumns] = useState<string[]>([]);
@@ -74,6 +74,7 @@ export default function NewCampaignPage() {
     const [leadGenDesiredCount, setLeadGenDesiredCount] = useState(20);
     const [leadGenCompanies, setLeadGenCompanies] = useState<any[]>([]);
     const [leadGenEnriching, setLeadGenEnriching] = useState<string | null>(null);
+    const [manualLeadsInput, setManualLeadsInput] = useState('');
 
     useEffect(() => {
         const init = async () => {
@@ -519,6 +520,40 @@ export default function NewCampaignPage() {
             alert('Lead enrichment failed.');
         }
         setLeadGenEnriching(null);
+    };
+
+    const handleManualImport = async () => {
+        if (!token || !workspaceId || !manualLeadsInput.trim()) return;
+        setSaving(true);
+        try {
+            // Parse manual input: either one email per line or comma-separated
+            // Also try to handle "Email, First Name, Last Name, Company" if provided
+            const lines = manualLeadsInput.split(/\n|,/).map(l => l.trim()).filter(Boolean);
+            const leadsToImport: any[] = [];
+
+            for (const line of lines) {
+                // very simple email check
+                if (line.includes('@')) {
+                    leadsToImport.push({ email: line });
+                }
+            }
+
+            if (leadsToImport.length === 0) {
+                alert('No valid emails found in input.');
+                setSaving(false);
+                return;
+            }
+
+            const res = await leads.importManual(token, workspaceId, leadsToImport);
+            await refreshLeads(token, workspaceId);
+            setManualLeadsInput('');
+            setShowAddLeadsModal(false);
+            alert(`Imported ${res.length} leads!`);
+        } catch (err) {
+            console.error(err);
+            alert('Manual import failed.');
+        }
+        setSaving(false);
     };
 
     if (loading) {
@@ -1118,6 +1153,20 @@ export default function NewCampaignPage() {
                             >
                                 Lead Gen
                             </button>
+                            <button
+                                onClick={() => setAddLeadsTab('manual')}
+                                style={{
+                                    padding: '8px 16px',
+                                    background: 'none',
+                                    border: 'none',
+                                    borderBottom: addLeadsTab === 'manual' ? '2px solid var(--accent-primary)' : 'none',
+                                    color: addLeadsTab === 'manual' ? 'var(--text-primary)' : 'var(--text-muted)',
+                                    cursor: 'pointer',
+                                    fontWeight: '500'
+                                }}
+                            >
+                                Manual Entry
+                            </button>
                         </div>
 
                         {addLeadsTab === 'csv' && (
@@ -1365,6 +1414,31 @@ export default function NewCampaignPage() {
                                         No leads found. Try a different query or location.
                                     </div>
                                 )}
+                            </div>
+                        )}
+
+                        {addLeadsTab === 'manual' && (
+                            <div>
+                                <p style={{ marginBottom: '16px', color: 'var(--text-secondary)' }}>
+                                    Enter email addresses manually (one per line).
+                                </p>
+                                <textarea
+                                    className="input"
+                                    placeholder="alice@example.com&#10;bob@example.com"
+                                    rows={10}
+                                    value={manualLeadsInput}
+                                    onChange={(e) => setManualLeadsInput(e.target.value)}
+                                    style={{ marginBottom: '16px', fontFamily: 'monospace' }}
+                                />
+                                <div style={{ textAlign: 'right' }}>
+                                    <button
+                                        className="btn btn-primary"
+                                        disabled={!manualLeadsInput.trim() || saving}
+                                        onClick={handleManualImport}
+                                    >
+                                        {saving ? 'Importing...' : 'Import Leads'}
+                                    </button>
+                                </div>
                             </div>
                         )}
                     </div>

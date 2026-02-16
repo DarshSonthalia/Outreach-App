@@ -201,6 +201,10 @@ class LeadGenImportRequest(BaseModel):
     leads: List[LeadGenCandidate]
 
 
+class LeadManualImportRequest(BaseModel):
+    leads: List[LeadCreate]
+
+
 class LeadGenCompanyCandidate(BaseModel):
     company: str
     website: Optional[str] = None
